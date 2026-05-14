@@ -1,245 +1,397 @@
 """
-Filter datasheet filler — selects the right Defender3 template variant
-based on quote contents, then fills the title block.
+datasheet_filler.py
 
-Variant selection logic:
-  The quote's FILTER DEFENDER line gives the base model (e.g. SP-33-48-732).
-  Additional line items in the quote disambiguate to a specific variant:
-    - 'BUSHING REDUCER ASSY 8" X 6"' line → use the "8X6 REDUCING BUSHING" variant
-    - Reference ending in '-R' → reduced height variant
-    - (Mirrored davit detection TBD — depends on what quote signal exists)
+Fills the title-block fields on a Neptune Benson / Evoqua filter datasheet PDF
+template. Replaces the previous version whose silent failure was masking that
+real production templates use field names like `-` and `Text2`/`Text3` rather
+than self-describing names.
 
-Once a variant is resolved to a file path, fill the title block fields:
-  PROJECT NAME, POOL NAME, CLIENT NAME, JOB#, DWN initials, dates.
+Key design decisions:
+
+1. Slots are matched by **field name first** (cheapest, most stable), then by
+   **default-value string**, then by **rect proximity** to a known anchor.
+2. We never let a missing field be a silent skip. Every slot logs SUCCESS or
+   the reason for failure (NOT_FOUND / NO_VALUE / WRITE_ERROR).
+3. The two INIT boxes and two DATE boxes share default-values across the
+   template, so they are disambiguated by widget Y position (upper = drawn,
+   lower = checked).
+4. We return a structured report so the orchestrator (and tests) can assert
+   that every required field actually landed.
+
+Field-name map below was verified against all five Imperial filter sizes
+(SP-27-48-487, SP-33-48-732, SP-41-48-1038, SP-49-48-1548, SP-55-48-2076)
+including all valve-kit variants.
 """
-import re
-import fitz
-from pathlib import Path
+
+from __future__ import annotations
+
+import logging
+import io
+from dataclasses import dataclass, field
+from typing import Optional
+
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, TextStringObject, BooleanObject
+
+log = logging.getLogger(__name__)
 
 
-def find_field_by_value(page, current_value: str):
-    """Locate a form field by its current default value (used for PROJECT NAME)."""
-    for w in page.widgets():
-        if w.field_value == current_value:
-            return w
-    return None
+# --- Slot definition ---------------------------------------------------------
+
+@dataclass
+class SlotSpec:
+    """How to find one logical title-block slot on a template."""
+    # Preferred field name(s), tried in order. Most templates use these.
+    names: tuple[str, ...] = ()
+    # Default-value strings to match as fallback.
+    defaults: tuple[str, ...] = ()
+    # Rough rect (x0, y0, x1, y1) used as final positional fallback. Optional.
+    rect_hint: Optional[tuple[float, float, float, float]] = None
+    # For duplicate-default slots (INIT, DYMNYR), which Y-rank to take.
+    # "upper" = max Y among matches; "lower" = min Y among matches; None = first.
+    y_rank: Optional[str] = None
+    required: bool = True
 
 
-def fill_datasheet(
-    template_path: str,
-    output_path: str,
-    *,
-    project_name: str,
-    pool_name: str,
-    client_name: str,
-    job_number: str,
-    engineer_initials: str = "",
-    drawn_date: str = "",
-):
-    """Open a fillable datasheet PDF, fill the title block fields, save."""
-    doc = fitz.open(template_path)
-    page = doc[0]
-    fields_by_name = {w.field_name: w for w in page.widgets()}
-
-    def set_field(name: str, value: str):
-        w = fields_by_name.get(name)
-        if w is None:
-            return False
-        w.field_value = value
-        w.update()
-        return True
-
-    # Project name field has inconsistent names — find it by its placeholder
-    proj_widget = find_field_by_value(page, "PROJECT NAME")
-    if proj_widget:
-        proj_widget.field_value = project_name
-        proj_widget.update()
-
-    set_field("Text2", pool_name)
-    set_field("Text3", client_name)
-    set_field("Text12", job_number)
-
-    if engineer_initials:
-        set_field("Text6", engineer_initials)
-        set_field("Text8", engineer_initials)
-    if drawn_date:
-        set_field("Text7", drawn_date)
-        set_field("Text9", drawn_date)
-
-    doc.save(output_path)
-    doc.close()
-    return output_path
-
-
-# ---------------------------------------------------------------------------
-# Template resolution: filter model + variants → file path
-# ---------------------------------------------------------------------------
-
-import os
-FILTER_TEMPLATE_BASE = Path(
-    os.environ.get("FILTER_TEMPLATE_BASE", "defender_drawings/DEFENDER3_DRAWINGS")
-)
-
-FILTER_FAMILIES = {
-    "ASSERO": ["SP-29-36-200", "SP-29-36-250", "SP-29-36-300",
-               "SP-29-36-350", "SP-29-36-400", "SP-29-36-450", "SP-29-36-500"],
-    "IMPERIAL": ["SP-27-48-487", "SP-33-48-732", "SP-41-48-1038",
-                 "SP-49-48-1548", "SP-55-48-2076"],
+# Verified against the five SP-* templates in DEFENDER3_DRAWINGS/IMPERIAL/.
+# Field names are consistent; default-value strings drift (CUSTOMER vs CLIENT NAME,
+# INIT vs INT, DYMNYR vs MM/DD/YY).
+TITLE_BLOCK_SLOTS: dict[str, SlotSpec] = {
+    "project_name": SlotSpec(
+        names=("-",),
+        defaults=("PROJECT NAME",),
+        rect_hint=(1604, 480, 1806, 492),
+    ),
+    "pool_name": SlotSpec(
+        names=("Text2",),
+        defaults=("POOL NAME",),
+        rect_hint=(1604, 468, 1805, 480),
+    ),
+    "customer": SlotSpec(
+        names=("Text3",),
+        defaults=("CUSTOMER", "CLIENT NAME", "CLIENT"),
+        rect_hint=(1603, 452, 1805, 465),
+    ),
+    "drawn_by": SlotSpec(
+        names=("Text6",),
+        defaults=("INIT", "INT"),
+        rect_hint=(1536, 478, 1560, 488),
+        y_rank="upper",
+    ),
+    "drawn_date": SlotSpec(
+        names=("Text7",),
+        defaults=("DYMNYR", "MM/DD/YY"),
+        rect_hint=(1563, 478, 1586, 487),
+        y_rank="upper",
+    ),
+    "checked_by": SlotSpec(
+        names=("Text8",),
+        defaults=("INIT", "INT"),
+        rect_hint=(1535, 463, 1559, 472),
+        y_rank="lower",
+        required=False,  # often left blank pre-review
+    ),
+    "checked_date": SlotSpec(
+        names=("Text9",),
+        defaults=("DYMNYR", "MM/DD/YY"),
+        rect_hint=(1563, 462, 1586, 472),
+        y_rank="lower",
+        required=False,
+    ),
+    "job_number": SlotSpec(
+        # The "####" box (Text12) is the primary DMS REFERENCE / job number box.
+        # Some templates also have a separate Text10 with default "JOB#" or "-"
+        # — that's the project_code slot below, NOT job_number.
+        names=("Text12",),
+        defaults=("####",),
+        rect_hint=(1693, 415, 1754, 423),
+    ),
+    "part_number": SlotSpec(
+        names=("Text11",),
+        defaults=("SP-33-48-732", "SP-27-48-487", "SP-41-48-1038",
+                  "SP-49-48-1548", "SP-55-48-2076"),
+        rect_hint=(1641, 415, 1691, 423),
+        required=False,  # pre-populated on the template; only override if asked
+    ),
+    "project_code": SlotSpec(
+        # Bottom strip leftmost cell, labeled "PROJECT". Short project code,
+        # distinct from the full project_name above.
+        names=("Text10",),
+        defaults=("-", "JOB#"),
+        rect_hint=(1590, 415, 1639, 423),
+        required=False,
+    ),
+    "sheet_num": SlotSpec(
+        names=("Text13",),
+        defaults=("1",),
+        rect_hint=(1757, 415, 1772, 423),
+        required=False,
+    ),
+    "sheet_total": SlotSpec(
+        names=("Text14",),
+        defaults=("1",),
+        rect_hint=(1782, 415, 1797, 423),
+        required=False,
+    ),
+    "revision": SlotSpec(
+        names=("Text15",),
+        defaults=("-",),
+        rect_hint=(1800, 415, 1809, 421),
+        required=False,
+    ),
 }
 
 
-def normalize_model(filter_model: str) -> str:
-    """Strip suffix qualifiers like '-A' → SP-29-36-250-A becomes SP-29-36-250."""
-    return re.sub(r"-[A-Z]$", "", filter_model)
+# --- Field discovery --------------------------------------------------------
+
+@dataclass
+class DiscoveredField:
+    name: str
+    default: str        # /V or /DV string, whichever present
+    rect: tuple[float, float, float, float] | None
 
 
-def detect_bushing_for_filter(quote_line_items, filter_section: str):
-    """Determine if a reducing bushing applies to a specific filter, based
-    on the valve-kit line item in the same quote section.
+def discover_fields(reader: PdfReader) -> dict[str, DiscoveredField]:
+    """Enumerate every form field with its name, current value, and rect."""
+    fields = reader.get_fields() or {}
+    rects: dict[str, tuple[float, float, float, float]] = {}
 
-    The Defender valve kit description encodes its configuration as
-    'N/N/N/NSG' where the first two numbers are influent and effluent
-    sizes. If those are smaller than the filter's native tank
-    connections, a reducing bushing is required.
+    for page in reader.pages:
+        annots = page.get("/Annots")
+        if not annots:
+            continue
+        for ref in annots:
+            obj = ref.get_object()
+            if obj.get("/Subtype") != "/Widget":
+                continue
+            t = obj.get("/T")
+            if t is None:
+                parent = obj.get("/Parent")
+                if parent is not None:
+                    t = parent.get_object().get("/T")
+            if t is None:
+                continue
+            rect = obj.get("/Rect")
+            if rect is not None:
+                rects[str(t)] = tuple(float(x) for x in rect)  # type: ignore[assignment]
 
-    Filter native connection sizes (inches):
-      SP-29-36-xxx (Assero) → 6"
-      SP-27-48-487          → 6"
-      SP-33-48-732          → 8"
-      SP-41-48-1038         → 8"
-      SP-49-48-1548         → 10"
-      SP-55-48-2076         → 12"
+    discovered: dict[str, DiscoveredField] = {}
+    for name, fobj in fields.items():
+        dv = str(fobj.get("/V") or fobj.get("/DV") or "")
+        discovered[str(name)] = DiscoveredField(
+            name=str(name),
+            default=dv,
+            rect=rects.get(str(name)),
+        )
+    return discovered
 
-    Returns a bushing spec like 'NXM' (e.g. '8X6', '6X4') or None.
+
+def _rect_distance(a: tuple[float, float, float, float],
+                   b: tuple[float, float, float, float]) -> float:
+    """Center-to-center distance between two rects."""
+    ax, ay = (a[0] + a[2]) / 2, (a[1] + a[3]) / 2
+    bx, by = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    return ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+
+
+def resolve_slot(slot: str,
+                 spec: SlotSpec,
+                 discovered: dict[str, DiscoveredField]
+                 ) -> tuple[Optional[DiscoveredField], str]:
     """
-    # Find the valve kit in the same section as the filter
-    kit_desc = None
-    for li in quote_line_items:
-        if (li.section == filter_section
-                and "DEFENDER VALVE KIT" in li.description.upper()):
-            kit_desc = li.description
-            break
-    if not kit_desc:
-        return None
+    Returns (field, strategy) where strategy is one of
+    'name' | 'default' | 'rect' | 'not_found'.
+    """
+    # Tier 1: exact name
+    for nm in spec.names:
+        if nm in discovered:
+            return discovered[nm], "name"
 
-    # Pull the size pattern out: 'AUTO 8/6/3/3SG' or '120V AUTO 4/4/3/3SG'
-    m = re.search(r'(\d+)/(\d+)/\d+/\d+', kit_desc)
-    if not m:
-        return None
-    influent_size = int(m.group(1))
-    effluent_size = int(m.group(2))
+    # Tier 2: default-value match (filter then disambiguate by Y)
+    matches = [f for f in discovered.values() if f.default in spec.defaults]
+    if matches:
+        if len(matches) == 1 or spec.y_rank is None:
+            return matches[0], "default"
+        with_rect = [m for m in matches if m.rect is not None]
+        if with_rect:
+            with_rect.sort(key=lambda m: m.rect[1])  # type: ignore[index]
+            chosen = with_rect[-1] if spec.y_rank == "upper" else with_rect[0]
+            return chosen, "default"
+        return matches[0], "default"
 
-    # Find the filter's native size
-    filter_native_size = None
-    for li in quote_line_items:
-        if li.section != filter_section:
-            continue
-        if "FILTER DEFENDER" not in li.description.upper():
-            continue
-        base = normalize_model(li.reference or "")
-        if base in FILTER_FAMILIES["ASSERO"] or base == "SP-27-48-487":
-            filter_native_size = 6
-        elif base in {"SP-33-48-732", "SP-41-48-1038"}:
-            filter_native_size = 8
-        elif base == "SP-49-48-1548":
-            filter_native_size = 10
-        elif base == "SP-55-48-2076":
-            filter_native_size = 12
-        break
+    # Tier 3: rect proximity to hint
+    if spec.rect_hint is not None:
+        candidates = [(f, _rect_distance(f.rect, spec.rect_hint))  # type: ignore[arg-type]
+                      for f in discovered.values() if f.rect is not None]
+        if candidates:
+            candidates.sort(key=lambda c: c[1])
+            best, dist = candidates[0]
+            if dist < 25:  # within ~25pt of the expected center
+                return best, "rect"
 
-    if filter_native_size is None:
-        return None
-
-    # If the effluent is smaller than the filter's native size, we need a bushing
-    bushing_target = min(influent_size, effluent_size)
-    if bushing_target < filter_native_size:
-        return f"{filter_native_size}X{bushing_target}"
-    return None
+    return None, "not_found"
 
 
-def detect_reduced_height(filter_model: str, reference: str = "") -> bool:
-    """Filter part reference ending in -R means reduced height."""
-    return reference.endswith("-R") or filter_model.endswith("-R")
+# --- Filling ----------------------------------------------------------------
+
+@dataclass
+class FillReport:
+    template: str
+    written: dict[str, tuple[str, str]] = field(default_factory=dict)  # slot -> (field_name, strategy)
+    missing: dict[str, str] = field(default_factory=dict)               # slot -> reason
+    extra_discovered: int = 0
+
+    def all_required_present(self) -> bool:
+        return all(
+            slot in self.written or not TITLE_BLOCK_SLOTS[slot].required
+            for slot in TITLE_BLOCK_SLOTS
+        )
+
+    def summary(self) -> str:
+        lines = [f"FillReport[{self.template}]"]
+        for slot in TITLE_BLOCK_SLOTS:
+            if slot in self.written:
+                name, strat = self.written[slot]
+                lines.append(f"  ✓ {slot:<14} -> {name!r} (via {strat})")
+            else:
+                reason = self.missing.get(slot, "skipped")
+                marker = "✗" if TITLE_BLOCK_SLOTS[slot].required else "·"
+                lines.append(f"  {marker} {slot:<14} {reason}")
+        return "\n".join(lines)
 
 
-def resolve_filter_template(
-    filter_model: str,
-    quote_line_items=None,
-    reference: str = "",
-    section: str = "",
-) -> Path:
-    """Pick the most specific template file matching the quote contents.
+def fill_datasheet(template_path: str,
+                   values: dict[str, str],
+                   output_path: Optional[str] = None,
+                   ) -> tuple[bytes, FillReport]:
+    """
+    Fill the title-block fields on a filter datasheet template.
 
     Args:
-      filter_model: the model from the FILTER DEFENDER line item
-      quote_line_items: full list so we can detect variants from other lines
-      reference: the line item's reference field (used for -R detection)
-      section: which quote section this filter is in (so we look at the
-               correct valve kit for bushing detection)
+        template_path: path to the blank template PDF.
+        values: mapping from slot name (project_name, pool_name, customer,
+            drawn_by, checked_by, drawn_date, checked_date, job_number,
+            part_number) to the string to write. Missing keys are skipped.
+        output_path: if given, also writes the filled PDF to disk.
+
+    Returns:
+        (pdf_bytes, report). The report tells the caller exactly which slots
+        were filled, which were missing, and via which lookup strategy.
+
+    Raises:
+        ValueError: if a required slot could not be resolved on the template.
     """
-    base = normalize_model(filter_model)
-    quote_line_items = quote_line_items or []
+    reader = PdfReader(template_path)
+    discovered = discover_fields(reader)
 
-    bushing = detect_bushing_for_filter(quote_line_items, section) if section else None
-    reduced = detect_reduced_height(filter_model, reference)
-    family = "ASSERO" if base in FILTER_FAMILIES["ASSERO"] else "IMPERIAL"
-
-    candidates = []
-    variant = f" - {bushing} REDUCING BUSHING" if bushing else ""
-
-    if family == "ASSERO":
-        candidates.append(f"ASSERO/IMPERIAL/TEMPLATE - {base}{variant}.pdf")
-        candidates.append(f"ASSERO/IMPERIAL/TEMPLATE - {base}.pdf")
-    else:
-        if reduced:
-            candidates.append(
-                f"IMPERIAL/REDUCED HEIGHT/TEMPLATE - {base}-R{variant}.pdf"
-            )
-            candidates.append(f"IMPERIAL/REDUCED HEIGHT/TEMPLATE - {base}-R.pdf")
-        candidates.append(f"IMPERIAL/TEMPLATE - {base}{variant}.pdf")
-        candidates.append(f"IMPERIAL/TEMPLATE - {base}.pdf")
-
-    for candidate in candidates:
-        full = FILTER_TEMPLATE_BASE / candidate
-        if full.exists():
-            return full
-
-    raise KeyError(
-        f"No template found for model={filter_model!r} "
-        f"(bushing={bushing}, reduced={reduced}). "
-        f"Tried:\n  " + "\n  ".join(candidates)
+    report = FillReport(
+        template=template_path.split("/")[-1],
+        extra_discovered=len(discovered),
     )
 
+    if not discovered:
+        raise ValueError(
+            f"No form fields found on template {template_path}. "
+            f"Template may be flattened or use a different form mechanism."
+        )
 
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
-    from quote_parser import parse_quote
+    log.info("fill_datasheet: %d fields discovered on %s",
+             len(discovered), report.template)
 
-    Path("/home/claude/prototype/output").mkdir(exist_ok=True)
+    writer = PdfWriter(clone_from=reader)
 
-    quote = parse_quote(
-        "/mnt/user-data/uploads/Ontario_Aquatic_Center-AS_SOLD__1_.pdf"
-    )
+    # Build slot -> (field_name, value) plan
+    plan: dict[str, tuple[str, str]] = {}
+    for slot, spec in TITLE_BLOCK_SLOTS.items():
+        if slot not in values or values[slot] is None or values[slot] == "":
+            if spec.required:
+                report.missing[slot] = "no_value_supplied"
+                log.warning("fill_datasheet: %s missing from input values", slot)
+            continue
 
-    # Test bushing detection per section
-    for section in ["Lap Pool", "Training pool"]:
-        bushing = detect_bushing_for_filter(quote.line_items, section)
-        print(f"Section '{section}' → bushing variant: {bushing}")
-    print()
+        chosen, strategy = resolve_slot(slot, spec, discovered)
+        if chosen is None:
+            report.missing[slot] = "field_not_found_on_template"
+            log.error("fill_datasheet: %s NOT FOUND on %s (tried names=%s, defaults=%s)",
+                      slot, report.template, spec.names, spec.defaults)
+            if spec.required:
+                # Don't raise mid-loop — collect all failures first for better debugging
+                pass
+            continue
 
-    # Resolve templates for each filter line in the quote
-    for li in quote.line_items:
-        if li.reference and li.reference.startswith("SP-"):
-            print(f"Filter: section='{li.section}' model='{li.reference}'")
+        plan[chosen.name] = (slot, str(values[slot]))
+        report.written[slot] = (chosen.name, strategy)
+        log.info("fill_datasheet: %s -> field %r via %s",
+                 slot, chosen.name, strategy)
+
+    # Apply updates: pypdf writes per-page, so group by page
+    for page_idx, page in enumerate(writer.pages):
+        page_updates = {}
+        annots = page.get("/Annots")
+        if not annots:
+            continue
+        page_field_names = set()
+        for ref in annots:
+            obj = ref.get_object()
+            if obj.get("/Subtype") != "/Widget":
+                continue
+            t = obj.get("/T")
+            if t is None:
+                parent = obj.get("/Parent")
+                if parent is not None:
+                    t = parent.get_object().get("/T")
+            if t is not None:
+                page_field_names.add(str(t))
+
+        for field_name, (slot, val) in plan.items():
+            if field_name in page_field_names:
+                page_updates[field_name] = val
+
+        if page_updates:
             try:
-                tmpl = resolve_filter_template(
-                    li.reference,
-                    quote.line_items,
-                    reference=li.reference,
-                    section=li.section,
-                )
-                print(f"  → {tmpl.relative_to(FILTER_TEMPLATE_BASE)}")
-            except KeyError as e:
-                print(f"  ERROR: {e}")
-            print()
+                writer.update_page_form_field_values(page, page_updates)
+            except Exception as e:
+                log.exception("fill_datasheet: write failed on page %d: %s",
+                              page_idx, e)
+                for fn in page_updates:
+                    slot = next((s for s, (n, _) in plan.items() if False), None)
+                    # rebuild: which slot used field fn
+                    for s, (fname, _) in report.written.items():
+                        if fname == fn:
+                            report.missing[s] = f"write_error: {e}"
+                            report.written.pop(s, None)
+                            break
+
+    # Ensure form appearance is rebuilt by the viewer so values actually display
+    try:
+        if "/AcroForm" in writer._root_object:  # type: ignore[attr-defined]
+            acroform = writer._root_object["/AcroForm"]  # type: ignore[attr-defined]
+            acroform[NameObject("/NeedAppearances")] = BooleanObject(True)
+    except Exception:
+        log.debug("fill_datasheet: could not set NeedAppearances", exc_info=True)
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    pdf_bytes = buf.getvalue()
+
+    if output_path:
+        with open(output_path, "wb") as f:
+            f.write(pdf_bytes)
+
+    # Final guard: if any *required* slot failed AND we had a value for it,
+    # raise. Required-but-no-value-supplied is the caller's problem, not ours.
+    hard_failures = [
+        slot for slot, reason in report.missing.items()
+        if TITLE_BLOCK_SLOTS[slot].required
+        and slot in values
+        and values[slot]
+        and reason != "no_value_supplied"
+    ]
+    if hard_failures:
+        raise ValueError(
+            f"fill_datasheet: required slots could not be written: {hard_failures}\n"
+            f"{report.summary()}"
+        )
+
+    log.info("fill_datasheet: complete\n%s", report.summary())
+    return pdf_bytes, report
