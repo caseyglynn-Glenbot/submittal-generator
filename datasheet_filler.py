@@ -77,7 +77,7 @@ def fill_datasheet(
 
 import os
 FILTER_TEMPLATE_BASE = Path(
-    os.environ.get("FILTER_TEMPLATE_BASE", "defender_drawings/DEFENDER3 DRAWINGS")
+    os.environ.get("FILTER_TEMPLATE_BASE", "defender_drawings/DEFENDER3_DRAWINGS")
 )
 
 FILTER_FAMILIES = {
