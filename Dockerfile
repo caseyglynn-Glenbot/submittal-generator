@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application code
 COPY *.py ./
 COPY templates/ ./templates/
+COPY defender_drawings/ ./defender_drawings/
 
 # Render sets $PORT; default to 8765 for local dev
 ENV PORT=8765
