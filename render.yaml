@@ -1,0 +1,15 @@
+# Render Blueprint — define the service so Render can deploy it from your repo.
+# Once committed to GitHub, point Render at this file via "New Blueprint Instance".
+
+services:
+  - type: web
+    name: submittal-generator
+    runtime: docker
+    plan: starter  # $7/month; change to "free" for no-cost tier with sleep
+    healthCheckPath: /health
+    envVars:
+      - key: API_KEY
+        generateValue: true  # Render generates a random secret on first deploy
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    autoDeploy: true  # auto-redeploy on git push to main
