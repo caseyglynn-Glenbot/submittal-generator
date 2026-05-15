@@ -259,7 +259,7 @@ def generate_submittal(
         src = fitz.open(str(path))
         final.insert_pdf(src)
         src.close()
-    final.save(output_pdf)
+    final.save(output_pdf, garbage=4, deflate=True, clean=True)
     final.close()
     print(f"Written: {output_pdf}")
     return output_pdf
