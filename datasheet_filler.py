@@ -191,6 +191,12 @@ class SlotSpec:
     defaults: tuple[str, ...] = ()
     y_rank: Optional[str] = None  # "upper" / "lower" — disambiguates duplicates
     required: bool = True
+    # When True and no value is supplied, the widget is still resolved and
+    # cleared (single-space write) so its template placeholder text doesn't
+    # leak into the baked output. Use for optional slots whose template
+    # default is a placeholder like "INT" / "DYMNYR" / "JOB#" rather than
+    # real reference content (e.g. a model number that we want to keep).
+    clear_if_unfilled: bool = False
 
 
 TITLE_BLOCK_SLOTS: dict[str, SlotSpec] = {
@@ -221,12 +227,14 @@ TITLE_BLOCK_SLOTS: dict[str, SlotSpec] = {
         defaults=("INIT", "INT"),
         y_rank="lower",
         required=False,
+        clear_if_unfilled=True,
     ),
     "checked_date": SlotSpec(
         names=("Text9",),
         defaults=("DYMNYR", "MM/DD/YY"),
         y_rank="lower",
         required=False,
+        clear_if_unfilled=True,
     ),
     "job_number": SlotSpec(
         names=("Text12",),
@@ -245,6 +253,7 @@ TITLE_BLOCK_SLOTS: dict[str, SlotSpec] = {
         names=("Text10",),
         defaults=("JOB#",),
         required=False,
+        clear_if_unfilled=True,
     ),
     "sheet_num": SlotSpec(
         names=("Text13",),
@@ -400,10 +409,23 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
         for slot, spec in TITLE_BLOCK_SLOTS.items():
             val = values.get(slot)
             if val is None or val == "":
+                # Three sub-cases when no value is supplied:
+                #   1. Slot is required → log a 'missing' entry, skip.
+                #   2. Slot is optional and clear_if_unfilled=True → still
+                #      resolve the widget and queue a blank write so the
+                #      template placeholder doesn't leak into the baked PDF.
+                #   3. Slot is optional and clear_if_unfilled=False → leave
+                #      widget alone (preserves whatever default the template
+                #      had, e.g. the part_number's real SP-* code).
                 if spec.required:
                     report.missing[slot] = "no_value_supplied"
                     log.warning("fill_datasheet: %s missing from input values", slot)
-                continue
+                    continue
+                if not spec.clear_if_unfilled:
+                    continue
+                # Fall through into the resolver with an empty value; the
+                # write step below converts "" to a single space.
+                val = ""
 
             chosen, strategy = _resolve_slot(spec, discovered_flat)
             if chosen is None:
@@ -429,7 +451,12 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
             page = doc[page_idx]
             for widget in page.widgets():
                 if widget.field_name in writes:
-                    widget.field_value = writes[widget.field_name]
+                    raw = writes[widget.field_name]
+                    # Empty string → single space so fitz regenerates the
+                    # widget appearance as blank instead of preserving the
+                    # template's placeholder text (same fitz quirk that the
+                    # cover_page_filler.py addresses).
+                    widget.field_value = raw if raw != "" else " "
                     widget.update()
 
         # CRITICAL: bake the widgets into the page content stream so the

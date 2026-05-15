@@ -216,7 +216,14 @@ def fill_cover_page(
             continue
 
         value = slot_values.get(slot_name, "")
-        widget.field_value = value
+        # When the value is empty, write a single space rather than "".
+        # fitz's bake step preserves the original widget appearance when
+        # field_value is "" (leaving placeholder text like "NAME" visible
+        # in the merged PDF). A single space forces appearance regeneration
+        # to a blank field — which is what we want when e.g. project name
+        # fits on line 1 and line 2 should disappear.
+        write_value = value if value != "" else " "
+        widget.field_value = write_value
         widget.update()
         report.slots_filled[slot_name] = how
         logger.debug("cover_page: %s = %r via %s", slot_name, value, how)

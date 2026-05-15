@@ -52,7 +52,20 @@ def annotate_page(
     row_search_terms: list,
     output_path: Path,
 ):
-    """Wrap annotation_engine: auto-detect rows, draw callout + boxes."""
+    """Wrap annotation_engine: auto-detect rows, draw callout + boxes.
+
+    Red boxes follow the actual table column bounds reported by the detector
+    (x_left_pt / width_pt for the row), not a hardcoded full-page rectangle.
+    A small inset keeps the box just inside the table border rather than
+    sitting on top of it. Fallback to (40, 540) only if the detector failed
+    to return bounds for the row.
+    """
+    # Inset (PDF points) so red box stays just inside the table rule lines.
+    # 2 points ≈ 0.028 in, enough to clear the rule without leaving a gap.
+    BOX_INSET = 2.0
+    FALLBACK_X = 40.0
+    FALLBACK_WIDTH = 540.0
+
     detected = detect_table_rows(str(template_path)) if row_search_terms else []
     red_boxes = []
     for term in row_search_terms:
@@ -60,9 +73,20 @@ def annotate_page(
         if row is None:
             print(f"    WARNING: no row matched '{term}' in {template_path.name}")
             continue
+
+        x_left = row.get("x_left_pt")
+        width = row.get("width_pt")
+        if x_left is None or width is None or width <= 0:
+            x_left = FALLBACK_X
+            width = FALLBACK_WIDTH
+            print(f"    WARNING: no x-bounds for row '{term}' in {template_path.name}; using fallback")
+        else:
+            x_left = x_left + BOX_INSET
+            width = max(width - 2 * BOX_INSET, 1.0)
+
         red_boxes.append(RedBox(
-            x=40, y=row["y_top_pt"],
-            width=540, height=row["height_pt"],
+            x=x_left, y=row["y_top_pt"],
+            width=width, height=row["height_pt"],
         ))
     callouts = [YellowCallout(x=callout_xy[0], y=callout_xy[1], lines=callout_lines)]
     spec = AnnotationSpec(
