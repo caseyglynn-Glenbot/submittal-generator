@@ -11,6 +11,7 @@ Authentication: a shared secret header (X-API-Key) protects /generate.
 The key is read from the API_KEY environment variable.
 """
 import os
+import re
 import shutil
 import tempfile
 import logging
@@ -39,6 +40,48 @@ app = FastAPI(
 )
 
 
+# ---------------------------------------------------------------------------
+# Date format conversion
+# ---------------------------------------------------------------------------
+# The n8n Form Trigger date picker emits ISO format (YYYY-MM-DD). The cover
+# page template's placeholder is MM/DD/YY (US two-digit year). We accept
+# either format from the caller and normalize to MM/DD/YY for the cover
+# page filler. This keeps the API tolerant of test calls via curl that
+# pass the US format directly.
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_US_DATE_2 = re.compile(r"^(\d{2})/(\d{2})/(\d{2})$")
+_US_DATE_4 = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
+
+
+def _normalize_date_for_cover(raw: str) -> str:
+    """Convert ISO YYYY-MM-DD or MM/DD/YYYY to MM/DD/YY. Pass through MM/DD/YY.
+
+    Raises ValueError on unrecognized formats so the API can return 400.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+
+    m = _ISO_DATE.match(s)
+    if m:
+        yyyy, mm, dd = m.groups()
+        return f"{mm}/{dd}/{yyyy[2:]}"
+
+    m = _US_DATE_2.match(s)
+    if m:
+        return s  # already in target format
+
+    m = _US_DATE_4.match(s)
+    if m:
+        mm, dd, yyyy = m.groups()
+        return f"{mm}/{dd}/{yyyy[2:]}"
+
+    raise ValueError(
+        f"Unrecognized date format: {s!r}. "
+        f"Expected YYYY-MM-DD, MM/DD/YY, or MM/DD/YYYY."
+    )
+
+
 @app.get("/health")
 def health():
     """Liveness check used by Render to confirm the service is up."""
@@ -50,6 +93,7 @@ async def generate(
     quote_pdf: UploadFile = File(...),
     job_number: str = Form(""),
     engineer_initials: str = Form(""),
+    submittal_return_date: str = Form(...),
     x_api_key: str = Header(default=""),
 ):
     # ----- Authentication -----
@@ -60,10 +104,16 @@ async def generate(
     if not quote_pdf.filename or not quote_pdf.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "quote_pdf must be a PDF file")
 
+    try:
+        normalized_return_date = _normalize_date_for_cover(submittal_return_date)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
     workdir = Path(tempfile.mkdtemp(prefix="submittal_"))
     logger.info(
-        "Generate request: file=%s job=%s initials=%s",
+        "Generate request: file=%s job=%s initials=%s return_date=%s (normalized: %s)",
         quote_pdf.filename, job_number, engineer_initials,
+        submittal_return_date, normalized_return_date,
     )
 
     try:
@@ -84,6 +134,7 @@ async def generate(
             str(output_path),
             job_number=job_number,
             engineer_initials=engineer_initials,
+            submittal_return_date=normalized_return_date,
         )
 
         if not output_path.exists():

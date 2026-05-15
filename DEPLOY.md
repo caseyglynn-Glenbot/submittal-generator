@@ -35,13 +35,20 @@ submittal-generator/
 ├── table_detector.py
 ├── mapping_table.py
 ├── datasheet_filler.py
-├── templates/         <-- drop your blank template PDFs here
+├── cover_page_filler.py
+├── templates/         <-- drop your blank template PDFs here (incl. cover_page.pdf)
 └── defender_drawings/ <-- drop your Defender3 drawings folder here
 ```
 
 **Add your templates and Defender3 drawings to the repo** before pushing.
 Yes, they go in the repo — they're configuration as far as Render is
 concerned. If templates are sensitive, make the repo private.
+
+The cover page template MUST be named exactly `templates/cover_page.pdf`.
+The filler resolves its fillable fields (project name, job#, return date)
+by name and default value, so any AcroForm cover with widgets `Text50`,
+`Text51`, `Text52`, `Text53` will work — but `cover_page.pdf` is the file
+path the orchestrator looks for.
 
 ### 1.2 Connect Render to GitHub
 
@@ -70,10 +77,23 @@ curl -X POST https://YOUR-SERVICE.onrender.com/generate \
   -F "quote_pdf=@/path/to/test_quote.pdf" \
   -F "job_number=12345" \
   -F "engineer_initials=ABC" \
+  -F "submittal_return_date=2026-12-15" \
   --output test_submittal.pdf
 ```
 
-If `test_submittal.pdf` opens with the expected pages, the service works.
+The `submittal_return_date` field is required. It accepts three formats and
+normalizes to `MM/DD/YY` for the cover page:
+
+| Input              | Source                  | Renders as |
+|--------------------|-------------------------|------------|
+| `2026-12-15`       | n8n Date picker (ISO)   | `12/15/26` |
+| `12/15/2026`       | US four-digit           | `12/15/26` |
+| `12/15/26`         | US two-digit            | `12/15/26` |
+
+Anything else returns a 400 with the message
+`Unrecognized date format: '<input>'`. Open `test_submittal.pdf` and verify
+page 1 shows the project name and job # in the title block, and the date
+under "Submittal Return Date".
 
 ---
 
@@ -110,6 +130,11 @@ In n8n Cloud → Credentials → Create New → "Header Auth" credential.
 6. Open the "Generate Submittal" node → Credentials → pick the
    "Submittal API" header-auth credential
 
+The form now has five fields, all but Engineer Initials required:
+Your Email, Quote PDF, Job Number, Engineer Initials, Submittal Return Date.
+The Submittal Return Date field uses n8n's native date picker, which emits
+ISO `YYYY-MM-DD`. The Render service converts to `MM/DD/YY` for the cover.
+
 ### 2.4 Activate the workflow
 
 Click "Active" toggle in the top right. n8n gives you a public form URL
@@ -122,7 +147,8 @@ Share that URL with your team. Anyone who has it can upload quotes.
 ## Part 3: Use It
 
 1. Open the form URL
-2. Enter your email, upload the quote PDF, enter job number + initials
+2. Enter your email, upload the quote PDF, enter job number + initials,
+   pick the submittal return date
 3. Submit
 4. Wait ~30 seconds (first request of the day is slower if you used the
    free tier, since Render sleeps)
@@ -161,6 +187,12 @@ you don't mind a 30-second wait on the first request of the day.
 **"Generate Submittal" node returns 401**
 → X-API-Key mismatch. Check the n8n credential matches Render's `API_KEY` env var.
 
+**"Generate Submittal" returns 400 "Unrecognized date format"**
+→ The submittal_return_date field received something other than
+   `YYYY-MM-DD`, `MM/DD/YY`, or `MM/DD/YYYY`. If using the n8n form, the
+   date picker should always emit ISO. If you've replaced the picker with
+   a text field, verify users are typing the expected format.
+
 **"Generate Submittal" times out**
 → Cold start. First request after 15 min idle takes ~30 sec on free tier.
    The default 120 sec timeout in the workflow should cover it.
@@ -173,6 +205,14 @@ you don't mind a 30-second wait on the first request of the day.
 → Open the Render service logs, look for "MISSING:" lines that show which
    template files weren't found. Add them to the `templates/` folder in
    git and push.
+
+**Cover page is blank or missing field values**
+→ Check Render logs for a line beginning `cover_page: filled=[...]`. If a
+   slot shows up under `missing=[...]`, the template's AcroForm widget for
+   that slot has a non-default name AND non-default value, so neither the
+   name-based nor value-based resolver tier finds it. Either re-export the
+   template with the standard widget defaults, or extend `COVER_SLOTS` in
+   `cover_page_filler.py` to include the new name/default.
 
 **Service crashes**
 → Render auto-restarts. If it keeps crashing, check the logs for Python

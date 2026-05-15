@@ -27,6 +27,11 @@
               "fieldLabel": "Engineer Initials",
               "placeholder": "e.g. LRH",
               "requiredField": false
+            },
+            {
+              "fieldLabel": "Submittal Return Date",
+              "fieldType": "date",
+              "requiredField": true
             }
           ]
         },
@@ -75,6 +80,10 @@
             {
               "name": "engineer_initials",
               "value": "={{ $json['Engineer Initials'] }}"
+            },
+            {
+              "name": "submittal_return_date",
+              "value": "={{ $json['Submittal Return Date'] }}"
             }
           ]
         },
@@ -101,7 +110,7 @@
         "toEmail": "={{ $('On Form Submission').item.json['Your Email'] }}",
         "subject": "=Submittal ready: Job #{{ $('On Form Submission').item.json['Job Number'] }}",
         "emailFormat": "text",
-        "text": "=Your submittal package is attached.\n\nJob Number: {{ $('On Form Submission').item.json['Job Number'] }}\nEngineer: {{ $('On Form Submission').item.json['Engineer Initials'] }}\nQuote file: {{ $('On Form Submission').item.json['Quote_PDF'][0].filename }}\n\nThis was generated automatically. Reply to this email if anything looks wrong.",
+        "text": "=Your submittal package is attached.\n\nJob Number: {{ $('On Form Submission').item.json['Job Number'] }}\nEngineer: {{ $('On Form Submission').item.json['Engineer Initials'] }}\nSubmittal Return Date: {{ $('On Form Submission').item.json['Submittal Return Date'] }}\nQuote file: {{ $('On Form Submission').item.json['Quote_PDF'][0].filename }}\n\nThis was generated automatically. Reply to this email if anything looks wrong.",
         "attachments": "submittal",
         "options": {}
       },

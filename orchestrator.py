@@ -1,8 +1,8 @@
 """
 Orchestrator — main entry point for submittal generation.
 
-Builds the submittal by combining three page categories:
-  1. Cover page (TODO: fillable PDF)
+Builds the submittal by combining these page categories:
+  1. Cover page — fillable PDF (project name, job#, submittal return date)
   2. Filter datasheets — one per filter sold (pages 2-3 equivalent)
   3. Static spec pages — always included
   4. Annotated accessory pages — driven by part numbers or valve kit specs
@@ -20,6 +20,7 @@ from mapping_table import (
 from datasheet_filler import (
     fill_datasheet, resolve_filter_template, FILTER_FAMILIES, normalize_model,
 )
+from cover_page_filler import fill_cover_page
 
 
 import os
@@ -86,11 +87,20 @@ def get_filter_family_for_section(quote, section: str):
     return None
 
 
+def _project_name_for_cover(raw: str) -> str:
+    """Strip a trailing ' Renovation' (case-insensitive) for cover page display."""
+    if not raw:
+        return ""
+    cleaned = re.sub(r"\s+renovation\s*$", "", raw, flags=re.IGNORECASE).strip()
+    return cleaned or raw  # don't return empty if the whole name was "Renovation"
+
+
 def generate_submittal(
     quote_pdf: str,
     output_pdf: str,
     job_number: str = "",
     engineer_initials: str = "",
+    submittal_return_date: str = "",
 ):
     OUTPUT_DIR.mkdir(exist_ok=True)
     quote = parse_quote(quote_pdf)
@@ -98,12 +108,23 @@ def generate_submittal(
 
     pages_to_merge = []
 
-    # ----- Step 1: cover page (TODO — placeholder for now) -----
+    # ----- Step 1: cover page (fillable PDF) -----
     cover_template = TEMPLATE_DIR / "cover_page.pdf"
     if cover_template.exists():
-        # If cover is a fillable PDF, fill it here; for now just include as-is
-        pages_to_merge.append(cover_template)
-        print(f"  Cover: {cover_template.name}")
+        cover_out = OUTPUT_DIR / "cover_page_filled.pdf"
+        effective_job = job_number or quote.quote_number
+        cover_project_name = _project_name_for_cover(quote.project_name)
+        _, cover_report = fill_cover_page(
+            template_path=cover_template,
+            project_name=cover_project_name,
+            job_number=effective_job,
+            submittal_return_date=submittal_return_date,
+            output_path=cover_out,
+        )
+        pages_to_merge.append(cover_out)
+        print(f"  Cover: {cover_out.name} — {cover_report.summary()}")
+    else:
+        print(f"  MISSING: {cover_template}")
 
     # ----- Step 2: filter datasheets (per filter sold) -----
     print("\n--- Filter datasheets ---")
@@ -271,4 +292,5 @@ if __name__ == "__main__":
         "/home/claude/prototype/output/FINAL_SUBMITTAL.pdf",
         job_number="76284",
         engineer_initials="LRH",
+        submittal_return_date="12/15/26",
     )
