@@ -59,6 +59,13 @@ def annotate_page(
     A small inset keeps the box just inside the table border rather than
     sitting on top of it. Fallback to (40, 540) only if the detector failed
     to return bounds for the row.
+
+    Before drawing, annotate_template() strips any pre-existing baked-in
+    red row boxes and yellow callouts from the template (controlled by
+    AnnotationSpec.strip_baked, default True). This handles templates that
+    were exported from job-specific past submittals and carry stale
+    annotations from those jobs. Strip counts log as
+    "stripped N red box(es), M yellow callout(s) from <template>".
     """
     # Inset (PDF points) so red box stays just inside the table rule lines.
     # 2 points ≈ 0.028 in, enough to clear the rule without leaving a gap.
@@ -93,6 +100,9 @@ def annotate_page(
         template_path=str(template_path),
         yellow_callouts=callouts,
         red_boxes=red_boxes,
+        # strip_baked defaults to True in AnnotationSpec — explicit here
+        # so future readers see the intent without grepping the dataclass.
+        strip_baked=True,
     )
     annotate_template(spec, str(output_path))
     return output_path

@@ -8,6 +8,14 @@ existing Ontario Aquatic Center submittal.
 Two annotation types:
 - "yellow_callout": yellow filled rectangle with bordered text
 - "red_box": red unfilled rectangle (typically around a table row)
+
+Baked-annotation stripping:
+    Many templates were exported from previous job-specific submittals and
+    carry pre-existing red row boxes and yellow callouts from those jobs.
+    Before drawing fresh annotations, annotate_template() runs a strip pass
+    that removes those baked-in artifacts so only the workflow's current
+    annotations appear in the output. Controlled via AnnotationSpec.strip_baked
+    (default True).
 """
 import fitz
 from pathlib import Path
@@ -50,10 +58,152 @@ class AnnotationSpec:
     template_path: str
     yellow_callouts: List[YellowCallout] = field(default_factory=list)
     red_boxes: List[RedBox] = field(default_factory=list)
+    # When True, strip any pre-existing red rectangles and yellow callouts
+    # from the template before drawing new ones. Default True so all
+    # workflow-annotated pages get a clean slate; flip to False if you ever
+    # need to *preserve* baked annotations (e.g. debugging a template).
+    strip_baked: bool = True
 
 
+# ---------------------------------------------------------------------------
+# Baked-annotation stripping
+# ---------------------------------------------------------------------------
+def _is_color_match(color, target, tolerance):
+    """Check if an RGB color tuple matches a target within per-channel tolerance."""
+    if color is None or len(color) < 3:
+        return False
+    return all(abs(color[i] - target[i]) <= tolerance for i in range(3))
+
+
+def strip_red_rectangles(page, tolerance=0.15, min_area=100):
+    """Remove pre-existing red-stroked, unfilled rectangles from a page.
+
+    Detects rectangles whose stroke color is ~red and whose fill is None,
+    then redacts the geometry while preserving any text inside (so table
+    row data — Size, A, B, C, Model, Part # — survives intact).
+
+    Returns the count of rectangles stripped.
+    """
+    targets = []
+
+    for drawing in page.get_drawings():
+        stroke = drawing.get("color")
+        fill = drawing.get("fill")
+
+        if stroke is None or fill is not None:
+            continue
+        if not _is_color_match(stroke, (1.0, 0.0, 0.0), tolerance):
+            continue
+
+        items = drawing.get("items", [])
+        if not items:
+            continue
+        kinds = {it[0] for it in items}
+        # "re" = rectangle primitive; "l" = line segment. Curves disqualify.
+        if not kinds.issubset({"re", "l"}):
+            continue
+
+        rect = drawing.get("rect")
+        if rect is None or rect.get_area() < min_area:
+            continue
+
+        targets.append(rect)
+
+    if not targets:
+        return 0
+
+    # Pad inward by half a point so the table border (typically just outside
+    # the red box stroke) isn't clipped along with the red rectangle.
+    for rect in targets:
+        padded = fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5,
+                           rect.x1 - 0.5, rect.y1 - 0.5)
+        page.add_redact_annot(padded)
+
+    # graphics=LINE_ART_REMOVE removes the vector strokes; text=TEXT_NONE
+    # leaves the row's data alone; images=IMAGE_NONE preserves any rasters
+    # (none expected on these templates but safe).
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_NONE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE,
+        text=fitz.PDF_REDACT_TEXT_NONE,
+    )
+
+    return len(targets)
+
+
+def strip_yellow_callouts(page, tolerance=0.2, min_area=400):
+    """Remove pre-existing yellow-filled callout boxes (and the text inside).
+
+    Unlike the red-box case, the text inside a yellow callout is itself
+    stale annotation content (e.g. "(1) 6" EFFLUENT REQ'D" from a prior
+    job) and SHOULD be removed — the workflow will draw the current
+    callout back in the right place.
+
+    Returns the count of callouts stripped.
+    """
+    targets = []
+
+    for drawing in page.get_drawings():
+        fill = drawing.get("fill")
+        if fill is None:
+            continue
+        # Yellow ~ (1, 1, 0). Generous tolerance for slightly off-yellow
+        # templates (e.g. (0.95, 0.95, 0.1)).
+        if not _is_color_match(fill, (1.0, 1.0, 0.0), tolerance):
+            continue
+
+        items = drawing.get("items", [])
+        if not items:
+            continue
+        kinds = {it[0] for it in items}
+        if not kinds.issubset({"re", "l"}):
+            continue
+
+        rect = drawing.get("rect")
+        if rect is None or rect.get_area() < min_area:
+            continue
+
+        targets.append(rect)
+
+    if not targets:
+        return 0
+
+    # Pad OUTWARD by 1pt to catch glyphs that extend slightly past the
+    # box edge (text inside a tight callout often clips the fill boundary).
+    for rect in targets:
+        padded = fitz.Rect(rect.x0 - 1, rect.y0 - 1,
+                           rect.x1 + 1, rect.y1 + 1)
+        page.add_redact_annot(padded)
+
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_NONE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE,
+        text=fitz.PDF_REDACT_TEXT_REMOVE,
+    )
+
+    return len(targets)
+
+
+def strip_baked_annotations(page) -> Tuple[int, int]:
+    """Strip both red boxes and yellow callouts from a page.
+
+    Returns (red_count, yellow_count). Call this BEFORE drawing the
+    workflow's fresh annotations on the page.
+    """
+    red = strip_red_rectangles(page)
+    yellow = strip_yellow_callouts(page)
+    return red, yellow
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 def annotate_template(spec: AnnotationSpec, output_path: str) -> str:
     """Apply annotations to a template PDF and write the result.
+
+    If spec.strip_baked is True (default), pre-existing red row boxes and
+    yellow callouts are removed from the template page before fresh
+    annotations are drawn. Strip counts are printed for observability.
 
     Returns the output path on success.
     """
@@ -64,6 +214,15 @@ def annotate_template(spec: AnnotationSpec, output_path: str) -> str:
             f"got {len(doc)} pages"
         )
     page = doc[0]
+
+    # Strip pre-existing baked annotations (red boxes from prior jobs,
+    # stale yellow callouts) so only this run's annotations appear.
+    if spec.strip_baked:
+        red_n, yellow_n = strip_baked_annotations(page)
+        if red_n or yellow_n:
+            template_name = Path(spec.template_path).name
+            print(f"    stripped {red_n} red box(es), {yellow_n} yellow callout(s) "
+                  f"from {template_name}")
 
     # Draw yellow callouts
     for cb in spec.yellow_callouts:
