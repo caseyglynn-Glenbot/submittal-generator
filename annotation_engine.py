@@ -13,9 +13,16 @@ Baked-annotation stripping:
     Many templates were exported from previous job-specific submittals and
     carry pre-existing red row boxes and yellow callouts from those jobs.
     Before drawing fresh annotations, annotate_template() runs a strip pass
-    that removes those baked-in artifacts so only the workflow's current
-    annotations appear in the output. Controlled via AnnotationSpec.strip_baked
-    (default True).
+    that overpaints those baked-in artifacts with white so only the
+    workflow's current annotations appear in the output.
+
+    Strategy: rather than redacting (which either misses thin strokes or
+    takes neighboring artwork with it), we OVERPAINT the detected shapes
+    with white at slightly larger dimensions than the original. White
+    against the page background is invisible, but it cleanly covers the
+    red/yellow geometry without touching the surrounding table grid.
+
+    Controlled via AnnotationSpec.strip_baked (default True).
 """
 import fitz
 from pathlib import Path
@@ -66,7 +73,7 @@ class AnnotationSpec:
 
 
 # ---------------------------------------------------------------------------
-# Baked-annotation stripping
+# Baked-annotation stripping (overpaint strategy)
 # ---------------------------------------------------------------------------
 def _is_color_match(color, target, tolerance):
     """Check if an RGB color tuple matches a target within per-channel tolerance."""
@@ -75,14 +82,25 @@ def _is_color_match(color, target, tolerance):
     return all(abs(color[i] - target[i]) <= tolerance for i in range(3))
 
 
+def _is_rectangle_drawing(drawing):
+    """Return True if the drawing is composed only of rectangles or straight
+    line segments (not curves)."""
+    items = drawing.get("items", [])
+    if not items:
+        return False
+    kinds = {it[0] for it in items}
+    return kinds.issubset({"re", "l"})
+
+
 def strip_red_rectangles(page, tolerance=0.15, min_area=100):
-    """Remove pre-existing red-stroked, unfilled rectangles from a page.
+    """Erase pre-existing red-stroked, unfilled rectangles from a page.
 
     Detects rectangles whose stroke color is ~red and whose fill is None,
-    then redacts the geometry while preserving any text inside (so table
-    row data — Size, A, B, C, Model, Part # — survives intact).
+    then overpaints them with a slightly-wider white stroke along the same
+    path. This covers the red rectangle without touching neighboring black
+    table borders.
 
-    Returns the count of rectangles stripped.
+    Returns the count of rectangles erased.
     """
     targets = []
 
@@ -90,56 +108,48 @@ def strip_red_rectangles(page, tolerance=0.15, min_area=100):
         stroke = drawing.get("color")
         fill = drawing.get("fill")
 
+        # Hollow red rectangles only. Filled red shapes are intentional
+        # artwork (e.g. logos) — leave them alone.
         if stroke is None or fill is not None:
             continue
         if not _is_color_match(stroke, (1.0, 0.0, 0.0), tolerance):
             continue
-
-        items = drawing.get("items", [])
-        if not items:
-            continue
-        kinds = {it[0] for it in items}
-        # "re" = rectangle primitive; "l" = line segment. Curves disqualify.
-        if not kinds.issubset({"re", "l"}):
+        if not _is_rectangle_drawing(drawing):
             continue
 
         rect = drawing.get("rect")
         if rect is None or rect.get_area() < min_area:
             continue
 
-        targets.append(rect)
+        # Capture the original stroke width so the overpaint is wide enough
+        # to fully cover it. Default to 1.5pt if absent.
+        width = drawing.get("width") or 1.5
+        targets.append((rect, width))
 
     if not targets:
         return 0
 
-    # Pad inward by half a point so the table border (typically just outside
-    # the red box stroke) isn't clipped along with the red rectangle.
-    for rect in targets:
-        padded = fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5,
-                           rect.x1 - 0.5, rect.y1 - 0.5)
-        page.add_redact_annot(padded)
-
-    # graphics=LINE_ART_REMOVE removes the vector strokes; text=TEXT_NONE
-    # leaves the row's data alone; images=IMAGE_NONE preserves any rasters
-    # (none expected on these templates but safe).
-    page.apply_redactions(
-        images=fitz.PDF_REDACT_IMAGE_NONE,
-        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE,
-        text=fitz.PDF_REDACT_TEXT_NONE,
-    )
+    # Overpaint with white stroke at 1.5x the original width to ensure full
+    # coverage of antialiased edges without bleeding noticeably into the
+    # surrounding artwork.
+    for rect, orig_width in targets:
+        overpaint_width = max(orig_width * 1.5, 2.0)
+        page.draw_rect(rect, color=WHITE, fill=None, width=overpaint_width)
 
     return len(targets)
 
 
 def strip_yellow_callouts(page, tolerance=0.2, min_area=400):
-    """Remove pre-existing yellow-filled callout boxes (and the text inside).
+    """Erase pre-existing yellow-filled callout boxes (and any text inside)
+    from a page.
 
     Unlike the red-box case, the text inside a yellow callout is itself
-    stale annotation content (e.g. "(1) 6" EFFLUENT REQ'D" from a prior
-    job) and SHOULD be removed — the workflow will draw the current
-    callout back in the right place.
+    stale annotation content from a prior job and SHOULD be removed. We
+    overpaint with a white-filled rectangle slightly larger than the
+    callout box, which covers both the yellow fill, the black border, and
+    any text glyphs that fell inside.
 
-    Returns the count of callouts stripped.
+    Returns the count of callouts erased.
     """
     targets = []
 
@@ -147,16 +157,9 @@ def strip_yellow_callouts(page, tolerance=0.2, min_area=400):
         fill = drawing.get("fill")
         if fill is None:
             continue
-        # Yellow ~ (1, 1, 0). Generous tolerance for slightly off-yellow
-        # templates (e.g. (0.95, 0.95, 0.1)).
         if not _is_color_match(fill, (1.0, 1.0, 0.0), tolerance):
             continue
-
-        items = drawing.get("items", [])
-        if not items:
-            continue
-        kinds = {it[0] for it in items}
-        if not kinds.issubset({"re", "l"}):
+        if not _is_rectangle_drawing(drawing):
             continue
 
         rect = drawing.get("rect")
@@ -168,18 +171,13 @@ def strip_yellow_callouts(page, tolerance=0.2, min_area=400):
     if not targets:
         return 0
 
-    # Pad OUTWARD by 1pt to catch glyphs that extend slightly past the
-    # box edge (text inside a tight callout often clips the fill boundary).
+    # Overpaint with white fill, expanding the rect by 1pt on each side so
+    # the original border (typically 0.5pt black) and any glyphs clipping
+    # the box edge are also covered.
     for rect in targets:
-        padded = fitz.Rect(rect.x0 - 1, rect.y0 - 1,
-                           rect.x1 + 1, rect.y1 + 1)
-        page.add_redact_annot(padded)
-
-    page.apply_redactions(
-        images=fitz.PDF_REDACT_IMAGE_NONE,
-        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE,
-        text=fitz.PDF_REDACT_TEXT_REMOVE,
-    )
+        expanded = fitz.Rect(rect.x0 - 1, rect.y0 - 1,
+                             rect.x1 + 1, rect.y1 + 1)
+        page.draw_rect(expanded, color=WHITE, fill=WHITE, width=0.5)
 
     return len(targets)
 
@@ -202,7 +200,7 @@ def annotate_template(spec: AnnotationSpec, output_path: str) -> str:
     """Apply annotations to a template PDF and write the result.
 
     If spec.strip_baked is True (default), pre-existing red row boxes and
-    yellow callouts are removed from the template page before fresh
+    yellow callouts are erased from the template page before fresh
     annotations are drawn. Strip counts are printed for observability.
 
     Returns the output path on success.
