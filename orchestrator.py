@@ -212,6 +212,40 @@ def build_fixed_red_boxes(entry: dict):
     return out
 
 
+def build_size_pinned_boxes(entry: dict, ctx: dict):
+    """Resolve an entry's size-keyed pinned_rows into explicit RedBox objects.
+
+    For raster templates that have NO usable table text layer (the scan is a
+    flat image, so both OCR row detection and search_for() are unreliable), the
+    row rectangles are measured once per template and pinned per size in
+    `pinned_rows`: {str(size): [{x, y, width, height[, line_width]}, ...]}.
+
+    `size_keys` names which ctx size value(s) drive the lookup for this page
+    (e.g. ["effluent_size", "precoat_size"]). Each resolved size contributes
+    the box(es) listed for it (one for a single-table page, two for the
+    Part-Numbers + Dimensions stack). Unknown sizes are skipped silently — the
+    caller already logs callouts, and a missing size means that table simply
+    has no row to box.
+
+    Returns a list of RedBox for the given single section's ctx; the valve-kit
+    loop accumulates and de-dups across sections.
+    """
+    rows_by_size = entry.get("pinned_rows")
+    if not rows_by_size:
+        return []
+    out = []
+    for key in entry.get("size_keys", []):
+        size = ctx.get(key)
+        if size is None:
+            continue
+        for b in rows_by_size.get(str(size), []):
+            out.append(RedBox(
+                x=b["x"], y=b["y"], width=b["width"], height=b["height"],
+                line_width=b.get("line_width", 1.2),
+            ))
+    return out
+
+
 _PE_RE = re.compile(r"PE[S]?-(\d{2})", re.I)
 
 
@@ -546,6 +580,8 @@ def generate_submittal(
         callout_lines = []
         row_terms = []
         pool_ctx = {}
+        pinned_boxes = []
+        _seen_boxes = set()
 
         for section, sizes in kits_by_section.items():
             family = get_filter_family_for_section(quote, section)
@@ -579,6 +615,16 @@ def generate_submittal(
                     if term not in row_terms:
                         row_terms.append(term)
 
+            # Size-keyed pinned red boxes (raster pages w/o a table text layer).
+            # Accumulate across sections, de-duping identical rects so two pools
+            # calling the same size don't stack overlapping boxes.
+            for rb in build_size_pinned_boxes(recipe, ctx):
+                bkey = (round(rb.x, 1), round(rb.y, 1),
+                        round(rb.width, 1), round(rb.height, 1))
+                if bkey not in _seen_boxes:
+                    _seen_boxes.add(bkey)
+                    pinned_boxes.append(rb)
+
         if not pool_ctx:
             continue
         out_path = OUTPUT_DIR / f"vk_{template_name}"
@@ -586,10 +632,11 @@ def generate_submittal(
             recipe, pool_ctx, callout_lines, recipe.get("callout_xy", (40, 40)),
         )
         annotate_page(template_path, callouts, row_terms, out_path,
-                      fixed_red_boxes=build_fixed_red_boxes(recipe),
+                      fixed_red_boxes=build_fixed_red_boxes(recipe) + pinned_boxes,
                       row_match=recipe.get("row_match", "first"))
         produced_pages[template_name] = out_path
-        print(f"  {template_name} ← {len(callouts)} callout box(es), {len(row_terms)} red boxes")
+        print(f"  {template_name} ← {len(callouts)} callout box(es), "
+              f"{len(row_terms) + len(pinned_boxes)} red boxes")
 
     # ----- 4c: Part-number-driven annotated pages -----
     print("\n--- Part-driven pages ---")

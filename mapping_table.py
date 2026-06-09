@@ -225,22 +225,53 @@ VALVE_KIT_PAGES = {
         # Centered on the requested spot (green-X mark): box center ≈ (471, 448)
         # in PDF points, so the top-left anchor is (374, 416).
         "callout_xy": (374, 416),
-        "row_search_multi": [
-            '{effluent_size}',  # match by size column
-            '{precoat_size}',
-        ],
-        # This page has two size tables (Part Numbers above, Dimensions below)
-        # sharing sizes; "last" puts the red boxes on the lower Dimensions table.
-        "row_match": "last",
+        # This template is a flattened raster scan: the ONLY real text is the
+        # yellow callout — every table value (sizes AND part #s) is pixels, so
+        # neither OCR row detection nor text-layer search lands the dense 3"/6"
+        # rows reliably. Instead the row rectangles were measured once off the
+        # raster and pinned per size. size_keys names which ctx sizes to box;
+        # each is looked up in pinned_rows (str(size) -> [box, ...]). One
+        # full-width Dimensions table here, so one box per size.
+        "size_keys": ["effluent_size", "precoat_size"],
+        "pinned_rows": {
+            "2":  [{"x": 36.9, "y": 648.2, "width": 538.7, "height": 9.6}],
+            "3":  [{"x": 36.9, "y": 657.8, "width": 538.7, "height": 10.0}],
+            "4":  [{"x": 36.9, "y": 667.8, "width": 538.7, "height": 9.0}],
+            "6":  [{"x": 36.9, "y": 676.8, "width": 538.7, "height": 10.0}],
+            "8":  [{"x": 36.9, "y": 686.8, "width": 538.7, "height": 9.2}],
+            "10": [{"x": 36.9, "y": 696.0, "width": 538.7, "height": 9.2}],
+            "12": [{"x": 36.9, "y": 705.2, "width": 538.7, "height": 9.6}],
+        },
     },
     "system_fill_drain_valve.pdf": {
         "callout_template": '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}',
         # Was centered on the green-X (10, 422); shifted +100 to the right.
         "callout_xy": (110, 422),
-        "row_search": '{precoat_size}',
         # Imperial filters use this fill-only page + the separate drain
         # extension page. Assero (SP-29) uses the combined page below instead.
         "only_for_filter_family": "IMPERIAL",
+        # Raster scan, no table text layer (same situation as
+        # effluent_precoat). Two tables per size: Part-Numbers (upper) +
+        # Dimensions (lower) — one box each. precoat_size is the system-fill
+        # valve size for Imperial filters. (Distinct raster from
+        # system_fill_drain_valve_assero.pdf — coords differ; measure per file.)
+        "size_keys": ["precoat_size"],
+        "pinned_rows": {
+            "2":     [{"x": 348.2, "y": 545.2, "width": 181.8, "height": 9.3},
+                      {"x": 75.5,  "y": 640.2, "width": 512.0, "height": 9.6}],
+            "2 1/2": [{"x": 348.2, "y": 554.5, "width": 181.8, "height": 9.7},
+                      {"x": 75.5,  "y": 649.8, "width": 512.0, "height": 9.7}],
+            "3":     [{"x": 348.2, "y": 564.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 659.5, "width": 512.0, "height": 9.3}],
+            "4":     [{"x": 348.2, "y": 573.8, "width": 181.8, "height": 9.4},
+                      {"x": 75.5,  "y": 668.8, "width": 512.0, "height": 9.4}],
+            "5":     [{"x": 348.2, "y": 583.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 678.2, "width": 512.0, "height": 9.6}],
+            "6":     [{"x": 348.2, "y": 592.8, "width": 181.8, "height": 9.4},
+                      {"x": 75.5,  "y": 687.8, "width": 512.0, "height": 9.4}],
+            "8":     [{"x": 348.2, "y": 602.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 697.2, "width": 512.0, "height": 9.6}],
+        },
     },
     "system_fill_drain_valve_assero.pdf": {
         # Combined System Fill & Drain Valve cut sheet — used for Assero (SP-29)
