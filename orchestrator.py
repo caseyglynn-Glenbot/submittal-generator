@@ -14,6 +14,8 @@ mapping_table.py is the single source of truth for everything after the
 schematics — to reposition any page, edit that list.
 """
 import re
+import shutil
+import subprocess
 import fitz
 from pathlib import Path
 from quote_parser import parse_quote, accessory_size, accessory_material
@@ -285,6 +287,37 @@ def _emit_in_page_order(produced_pages: dict, pages_to_merge: list):
     for template_name in leftovers:
         print(f"  WARNING: '{template_name}' produced but not in PAGE_ORDER; appending at end")
         pages_to_merge.append(produced_pages[template_name])
+
+
+def _compress_pdf(src_path: str, out_path: str, dpi: int = 150):
+    """Downsample images via Ghostscript to shrink the merged submittal so it
+    doesn't blow n8n's per-execution memory when returned as a binary.
+
+    Vector line work (the CAD drawings, the drawn annotations) is unaffected;
+    only embedded raster images (product photos, 3D renders) are downsampled
+    to `dpi`. Falls back to the uncompressed file if gs is missing or fails,
+    and keeps whichever file is smaller.
+    """
+    try:
+        subprocess.run([
+            "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.5",
+            "-dPDFSETTINGS=/ebook", "-dDetectDuplicateImages=true",
+            f"-dColorImageResolution={dpi}", f"-dGrayImageResolution={dpi}",
+            "-dNOPAUSE", "-dQUIET", "-dBATCH",
+            f"-sOutputFile={out_path}", src_path,
+        ], check=True)
+        if os.path.getsize(out_path) > os.path.getsize(src_path):
+            shutil.copyfile(src_path, out_path)  # gs made it bigger; keep original
+        print(f"  compressed: {os.path.getsize(src_path)//1024}KB -> "
+              f"{os.path.getsize(out_path)//1024}KB")
+    except Exception as e:
+        print(f"  compress: gs unavailable/failed ({e}); using uncompressed output")
+        shutil.copyfile(src_path, out_path)
+    finally:
+        try:
+            os.remove(src_path)
+        except OSError:
+            pass
 
 
 def generate_submittal(
@@ -571,8 +604,12 @@ def generate_submittal(
         src = fitz.open(str(path))
         final.insert_pdf(src)
         src.close()
-    final.save(output_pdf, garbage=4, deflate=True, clean=True)
+    raw_path = str(output_pdf) + ".raw.pdf"
+    final.save(raw_path, garbage=4, deflate=True, clean=True)
     final.close()
+    # Slim the merged output (image downsampling) so the binary stays small
+    # enough to pass back through n8n without exhausting its memory.
+    _compress_pdf(raw_path, str(output_pdf))
     print(f"Written: {output_pdf}")
     return output_pdf
 

@@ -6,6 +6,7 @@ FROM python:3.11-slim
 # System dependencies for OCR and PDF rasterization
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
+    ghostscript \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
