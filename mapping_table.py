@@ -211,7 +211,11 @@ VALVE_KIT_PAGES = {
     "influent_check_valve.pdf": {
         "callout_template": '(1) {influent_size}" REQ\'D - {pool_label}',
         "callout_xy": (365, 450),
-        "row_search": 'DN{influent_dn} - {influent_size}"',
+        # The influent table's leftmost column is the Part #, so the OCR row
+        # label starts with the part number, not the size. Match the unique
+        # DN code (e.g. "DN200") as a substring instead — see
+        # find_row_by_label's distinctive-term rule.
+        "row_search": 'DN{influent_dn}',
     },
     "effluent_precoat_valves.pdf": {
         "callout_template": (

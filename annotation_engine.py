@@ -177,10 +177,40 @@ def annotate_template(spec: AnnotationSpec, output_path: str) -> str:
             print(f"    stripped {red_n} red box(es), {yellow_n} yellow callout(s) "
                   f"from {template_name}")
 
-    # Draw yellow callouts
+    # Draw yellow callouts.
+    #
+    # Auto-fit: the box never clips its text. It widens to fit the longest
+    # line (never narrower than the recipe's configured width). If widening
+    # would push the box past the right page edge, the font is scaled down
+    # instead so the longest line fits the available inner width exactly
+    # (helvetica advance width scales linearly with font size). Both behaviours
+    # are no-ops for boxes whose text already fits the configured width.
+    PAGE_MARGIN = 2.0
     for cb in spec.yellow_callouts:
-        height = (cb.line_height * len(cb.lines)) + (cb.padding * 2)
-        rect = fitz.Rect(cb.x, cb.y, cb.x + cb.width, cb.y + height)
+        lines = cb.lines or [""]
+        font_size = cb.font_size
+        line_height = cb.line_height
+
+        longest = max(
+            (fitz.get_text_length(ln, fontname="helv", fontsize=font_size)
+             for ln in lines),
+            default=0.0,
+        )
+        box_w = max(cb.width, longest + 2 * cb.padding)
+
+        # Clamp to the page; if clamped, shrink the font (and line spacing)
+        # so the longest line fits the available inner width.
+        max_w = page.rect.width - cb.x - PAGE_MARGIN
+        if box_w > max_w:
+            box_w = max_w
+            inner = max(box_w - 2 * cb.padding, 1.0)
+            if longest > 0:
+                scale = inner / longest
+                font_size *= scale
+                line_height *= scale
+
+        height = (line_height * len(lines)) + (cb.padding * 2)
+        rect = fitz.Rect(cb.x, cb.y, cb.x + box_w, cb.y + height)
         # Filled yellow rectangle with thin black border
         page.draw_rect(
             rect,
@@ -190,13 +220,13 @@ def annotate_template(spec: AnnotationSpec, output_path: str) -> str:
         )
         # Insert each line of text
         text_x = cb.x + cb.padding
-        text_y = cb.y + cb.padding + cb.font_size  # baseline offset
-        for i, line in enumerate(cb.lines):
+        text_y = cb.y + cb.padding + font_size  # baseline offset
+        for i, line in enumerate(lines):
             page.insert_text(
-                (text_x, text_y + i * cb.line_height),
+                (text_x, text_y + i * line_height),
                 line,
                 fontname="helv",
-                fontsize=cb.font_size,
+                fontsize=font_size,
                 color=BLACK_BORDER,
             )
 

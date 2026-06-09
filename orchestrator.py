@@ -87,6 +87,14 @@ def find_row_by_label(rows, search_terms, prefer="first"):
     that appear elsewhere in an earlier row — the bug that collapsed every red
     box onto the size-2 row.
 
+    Exception: a *distinctive* term (length >= 4 after normalization, e.g. a
+    DN code like "dn200") may also match as a substring anywhere in the label.
+    This handles tables whose leftmost column is the Part # rather than the
+    size (the influent check valve sheet), where the row label normalizes to
+    e.g. "10018102dn2008" and so never starts with the size key. Short bare
+    sizes (len < 4) keep startswith-only matching, preserving the fraction
+    protection above.
+
     prefer="first" returns the topmost match (default; correct for single-table
     pages and reducer sheets where the wanted table is first). prefer="last"
     returns the bottommost match — for pages carrying two size tables (e.g.
@@ -100,7 +108,11 @@ def find_row_by_label(rows, search_terms, prefer="first"):
     for row in rows:
         label_norm = normalize_for_search(row["label"])
         for term in normalized:
-            if term and label_norm.startswith(term):
+            hit = bool(term) and (
+                label_norm.startswith(term)
+                or (len(term) >= 4 and term in label_norm)
+            )
+            if hit:
                 if prefer == "first":
                     return row
                 match = row  # keep scanning; return the last match
