@@ -215,7 +215,9 @@ VALVE_KIT_PAGES = {
             '(1) {effluent_size}" EFFLUENT REQ\'D - {pool_label}\n'
             '(1) {precoat_size}" PRECOAT REQ\'D - {pool_label}'
         ),
-        "callout_xy": (365, 690),
+        # Centered on the requested spot (green-X mark): box center ≈ (471, 448)
+        # in PDF points, so the top-left anchor is (374, 416).
+        "callout_xy": (374, 416),
         "row_search_multi": [
             '{effluent_size}',  # match by size column
             '{precoat_size}',
@@ -223,7 +225,9 @@ VALVE_KIT_PAGES = {
     },
     "system_fill_drain_valve.pdf": {
         "callout_template": '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}',
-        "callout_xy": (365, 580),
+        # Centered on the requested spot (green-X mark): box center ≈ (106, 440)
+        # in PDF points, so the top-left anchor is (10, 422).
+        "callout_xy": (10, 422),
         "row_search": '{precoat_size}',
     },
     "drain_valve_extension.pdf": {
@@ -236,7 +240,9 @@ VALVE_KIT_PAGES = {
     },
     "inline_sightglass.pdf": {
         "callout_template": '(1) {sightglass_size}" REQ\'D - {pool_label}',
-        "callout_xy": (365, 590),
+        # Centered on the requested spot (green-X mark): box center ≈ (290, 495)
+        # in PDF points, so the top-left anchor is (193, 477).
+        "callout_xy": (193, 477),
         "row_search": '{sightglass_size}',
     },
 }
