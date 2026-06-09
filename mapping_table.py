@@ -136,28 +136,14 @@ PART_MAPPING = {
     },
 
     # ----- Grating -----
-    "1002-5406": {
-        "template": "grating_straight.pdf",
-        "callout_template": "({qty}') PA-12 WHITE - REQ'D",
-        "callout_xy": (60, 720),
-        "red_box_rows": [],
-    },
-    "1000-7906": {
-        "template": "grating_straight.pdf",
-        "callout_template": "({qty}') CA-NOTAIL WHITE - REQ'D",
-        "callout_xy": (60, 736),
-        "red_box_rows": [],
-    },
+    # Parallel STRAIGHT grating (grate PA-<n>-WT + curb-angle CA-* + fastening
+    # PA-FASTSET*) is handled as a grouped, band-sized page — see
+    # GRATING_PARALLEL_STRAIGHT below and step 4e in orchestrator.py. The corner
+    # is a separate page:
     "1000-8601": {
         "template": "grating_corner.pdf",
         "callout_template": "({qty}) 90CN-OUT REQ'D",
         "callout_xy": (60, 720),
-        "red_box_rows": [],
-    },
-    "1000-8653": {
-        "template": "grating_straight.pdf",
-        "callout_template": "({qty}) FASTENING SETS OF 50",
-        "callout_xy": (60, 752),
         "red_box_rows": [],
     },
 
@@ -350,6 +336,25 @@ ACCESSORY_PAGES = {
 
 
 # ---------------------------------------------------------------------------
+# 3c. PARALLEL STRAIGHT GRATING — grouped, band-sized page.
+#
+# A parallel grate order is several lines that belong on ONE page: the grate
+# (Reference# PA-<width>-WT), the curb angle (CA-*), and the fastening set
+# (PA-FASTSET*). The page is chosen by the GRATE's width band. Callout-only —
+# these sheets have no size table to red-box. callout_xy is the placeholder
+# position measured per band sheet. (The 90° corner PA-*CN-* is a separate
+# page — see PART_MAPPING 1000-8601.)
+#
+# Width band (inches, inclusive) -> (template filename, callout top-left xy)
+# ---------------------------------------------------------------------------
+GRATING_PARALLEL_STRAIGHT = {
+    (6, 10):  ("grating_parallel_0610.pdf", (74, 571)),
+    (11, 14): ("grating_parallel_1114.pdf", (88, 550)),
+    (15, 18): ("grating_parallel_1518.pdf", (91, 558)),
+}
+
+
+# ---------------------------------------------------------------------------
 # 4. PER-FILTER SCHEMATICS
 # ---------------------------------------------------------------------------
 # One schematic page per filter line item on the quote. Schematic file is
@@ -465,7 +470,9 @@ PAGE_ORDER = [
     "reducer_ss.pdf",               # SS concentric + eccentric
 
     # ----- Grating (part-driven) -----
-    "grating_straight.pdf",         # parallel straight
+    "grating_parallel_0610.pdf",    # parallel straight (6-10")
+    "grating_parallel_1114.pdf",    # parallel straight (11-14")
+    "grating_parallel_1518.pdf",    # parallel straight (15-18")
     "grating_corner.pdf",           # parallel corner
     "grating_radial.pdf",           # parallel radial
     "grating_perpendicular_0406.pdf",

@@ -23,7 +23,7 @@ from annotation_engine import annotate_template, AnnotationSpec, YellowCallout, 
 from table_detector import detect_table_rows
 from mapping_table import (
     PART_MAPPING, STATIC_PAGES, VALVE_KIT_PAGES, PAGE_ORDER,
-    SCHEMATIC_BY_FAMILY, ACCESSORY_PAGES,
+    SCHEMATIC_BY_FAMILY, ACCESSORY_PAGES, GRATING_PARALLEL_STRAIGHT,
     parse_valve_kit_sizes, inch_to_dn, get_pool_label, filter_size_key,
 )
 import parts_catalog
@@ -36,6 +36,42 @@ from cover_page_filler import fill_cover_page
 import os
 TEMPLATE_DIR = Path(os.environ.get("TEMPLATE_DIR", "templates"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/tmp/submittal_output"))
+
+
+_PA_GRATE_RE = re.compile(r"PA-(\d+)-WT$", re.I)
+
+
+def parallel_straight_grating(line_items):
+    """Resolve the parallel STRAIGHT grating page from a quote's lines.
+
+    The grate (Reference# PA-<width>-WT), curb angle (CA-*), and fastening set
+    (PA-FASTSET*) all belong on one page, sized by the grate's width band.
+    Returns (template, (cx, cy), [callout_lines]) or None. Callout-only — no
+    red box (these sheets carry no size table). The 90° corner (PA-*CN-*) is a
+    separate page and is intentionally not matched here.
+    """
+    grate = curb = fasten = None
+    for li in line_items:
+        ref = (li.reference or "").upper()
+        if _PA_GRATE_RE.match(ref):
+            grate = li
+        elif ref.startswith("CA-"):
+            curb = li
+        elif "FASTSET" in ref:
+            fasten = li
+    if grate is None:
+        return None
+    width = int(_PA_GRATE_RE.match(grate.reference.upper()).group(1))
+    for (lo, hi), (tmpl, xy) in GRATING_PARALLEL_STRAIGHT.items():
+        if lo <= width <= hi:
+            lines = [f"({grate.quantity}') {grate.reference} REQ'D"]
+            if curb:
+                lines.append(f"({curb.quantity}') {curb.reference} REQ'D")
+            if fasten:
+                lines.append(f"({fasten.quantity}) STR FASTENING SET REQ'D")
+            return tmpl, xy, lines
+    print(f"  WARNING: parallel grate width {width}\" outside known bands; no page")
+    return None
 
 
 def normalize_for_search(s: str) -> str:
@@ -645,6 +681,20 @@ def generate_submittal(
         produced_pages[page] = out_path
         flag = " [VERIFY wording]" if recipe.get("verify") else ""
         print(f"  {page} ← {len(job['callout_lines'])} callout line(s), {len(fixed)} red box(es){flag}")
+
+    # ----- 4e: Parallel straight grating (grouped, band-sized; callout-only).
+    pg = parallel_straight_grating(quote.line_items)
+    if pg:
+        tmpl, (cx, cy), lines = pg
+        template_path = TEMPLATE_DIR / tmpl
+        if not template_path.exists():
+            print(f"  MISSING (skipped): {tmpl}")
+        else:
+            callouts = [YellowCallout(x=cx, y=cy, lines=lines)]
+            out_path = OUTPUT_DIR / f"acc_{tmpl}"
+            annotate_page(template_path, callouts, [], out_path)
+            produced_pages[tmpl] = out_path
+            print(f"  {tmpl} ← parallel grating ({len(lines)} callout line(s)) [VERIFY wording]")
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5 — Emit produced pages in PAGE_ORDER, append leftovers at end
