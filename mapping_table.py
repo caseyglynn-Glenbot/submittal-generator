@@ -222,17 +222,20 @@ VALVE_KIT_PAGES = {
             '{effluent_size}',  # match by size column
             '{precoat_size}',
         ],
+        # This page has two size tables (Part Numbers above, Dimensions below)
+        # sharing sizes; "last" puts the red boxes on the lower Dimensions table.
+        "row_match": "last",
     },
     "system_fill_drain_valve.pdf": {
         "callout_template": '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}',
-        # Centered on the requested spot (green-X mark): box center ≈ (106, 440)
-        # in PDF points, so the top-left anchor is (10, 422).
-        "callout_xy": (10, 422),
+        # Was centered on the green-X (10, 422); shifted +100 to the right.
+        "callout_xy": (110, 422),
         "row_search": '{precoat_size}',
     },
     "drain_valve_extension.pdf": {
         "callout_template": '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}',
-        "callout_xy": (75, 500),
+        # Shifted +50 downwards from its prior spot (75, 500).
+        "callout_xy": (75, 550),
         "row_search": '{precoat_size}',
         # Only Imperial-family filters get a separate drain extension page;
         # Assero filters have the drain on the system fill/drain page

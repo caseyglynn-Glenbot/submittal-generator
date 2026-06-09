@@ -42,17 +42,34 @@ def normalize_for_search(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 
-def find_row_by_label(rows, search_terms):
-    """Return the first row whose OCR label contains any search term."""
+def find_row_by_label(rows, search_terms, prefer="first"):
+    """Return the row whose SIZE column matches a search term.
+
+    Matching is anchored to the START of the normalized label (the leftmost /
+    size column) rather than a substring of the whole row. This prevents a
+    bare size like "4" from matching dimension fractions ("2 1/4", "3 7/8")
+    that appear elsewhere in an earlier row — the bug that collapsed every red
+    box onto the size-2 row.
+
+    prefer="first" returns the topmost match (default; correct for single-table
+    pages and reducer sheets where the wanted table is first). prefer="last"
+    returns the bottommost match — for pages carrying two size tables (e.g.
+    effluent/precoat valves: a Part-Numbers table above a Dimensions table that
+    share the same sizes), so the box lands on the lower Dimensions table.
+    """
     if isinstance(search_terms, str):
         search_terms = [search_terms]
     normalized = [normalize_for_search(t) for t in search_terms]
+    match = None
     for row in rows:
         label_norm = normalize_for_search(row["label"])
         for term in normalized:
-            if term and term in label_norm:
-                return row
-    return None
+            if term and label_norm.startswith(term):
+                if prefer == "first":
+                    return row
+                match = row  # keep scanning; return the last match
+                break
+    return match
 
 
 def _safe_format(template: str, ctx: dict) -> str:
@@ -162,6 +179,7 @@ def annotate_page(
     row_search_terms: list,
     output_path: Path,
     fixed_red_boxes: list = None,
+    row_match: str = "first",
 ):
     """Wrap annotation_engine: draw explicit callouts + fixed/auto-detected boxes.
 
@@ -184,7 +202,7 @@ def annotate_page(
 
     detected = detect_table_rows(str(template_path)) if row_search_terms else []
     for term in row_search_terms:
-        row = find_row_by_label(detected, term)
+        row = find_row_by_label(detected, term, prefer=row_match)
         if row is None:
             print(f"    WARNING: no row matched '{term}' in {template_path.name}")
             continue
@@ -483,7 +501,8 @@ def generate_submittal(
             recipe, pool_ctx, callout_lines, recipe.get("callout_xy", (40, 40)),
         )
         annotate_page(template_path, callouts, row_terms, out_path,
-                      fixed_red_boxes=build_fixed_red_boxes(recipe))
+                      fixed_red_boxes=build_fixed_red_boxes(recipe),
+                      row_match=recipe.get("row_match", "first"))
         produced_pages[template_name] = out_path
         print(f"  {template_name} ← {len(callouts)} callout box(es), {len(row_terms)} red boxes")
 
