@@ -316,7 +316,20 @@ VALVE_KIT_PAGES = {
         # Centered on the requested spot (green-X mark): box center ≈ (290, 495)
         # in PDF points, so the top-left anchor is (193, 477).
         "callout_xy": (193, 477),
-        "row_search": '{sightglass_size}',
+        # Raster scan, no table text layer — OCR row detection drew nothing on
+        # this page. Rows pinned off the real grid (288 DPI); the row-3 anchor
+        # was confirmed against the template's baked prior-job box (the top
+        # detected rule is the "in" subheader, not size 2 — the baked box keeps
+        # the labeling honest). One full-width box per size; sightglass size =
+        # precoat size for these systems.
+        "size_keys": ["sightglass_size"],
+        "pinned_rows": {
+            "2": [{"x": 208.6, "y": 652.1, "width": 181.8, "height": 11.7}],
+            "3": [{"x": 208.6, "y": 663.8, "width": 181.8, "height": 11.7}],
+            "4": [{"x": 208.6, "y": 675.5, "width": 181.8, "height": 11.9}],
+            "6": [{"x": 208.6, "y": 687.4, "width": 181.8, "height": 11.7}],
+            "8": [{"x": 208.6, "y": 699.1, "width": 181.8, "height": 12.7}],
+        },
     },
 }
 
