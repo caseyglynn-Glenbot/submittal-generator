@@ -36,6 +36,63 @@ class Quote:
     line_items: List[LineItem] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Accessory description parsing (reducers / precoat tees / strainers)
+#
+# The size shown in the yellow callout is parsed from the line-item
+# description rather than stored per-part. Verified against real quote lines:
+#   "REDUCER, CONC 6x4 FG"        -> CONC, FG, '6" X 4"'
+#   "TEE PRECOAT 8X5X3 FG RED"    -> FG,       '8" x 5" x 3"'
+#   "STRAINER H&L GUARDIAN 8 FG"  -> FG,       '8"'
+# ---------------------------------------------------------------------------
+_SIZE_3 = re.compile(r'(\d+(?:\s*1/2)?)\s*[xX]\s*(\d+(?:\s*1/2)?)\s*[xX]\s*(\d+(?:\s*1/2)?)')
+_SIZE_2 = re.compile(r'(\d+(?:\s*1/2)?)\s*[xX]\s*(\d+(?:\s*1/2)?)')
+_SIZE_1 = re.compile(r'GUARDIAN\s+(\d+)|(\d+)\s+(?:FG|SS|T316)', re.I)
+
+
+def accessory_material(description: str) -> str:
+    """Return 'SS', 'FG', 'PVC', or '' from a line description."""
+    u = (description or "").upper()
+    if "T316" in u or re.search(r'\bSS\b', u):
+        return "SS"
+    if "FG" in u:
+        return "FG"
+    if "PVC" in u:
+        return "PVC"
+    return ""
+
+
+def reducer_type(description: str) -> str:
+    """Return 'CONC', 'ECC', or '' for reducer/tee lines."""
+    u = (description or "").upper()
+    if "CONC" in u:
+        return "CONC"
+    if "ECC" in u:
+        return "ECC"
+    return ""
+
+
+def accessory_size(description: str):
+    """Parse the AxBxC / AxB / single size token from a description.
+
+    Returns the display string (e.g. '8" x 5" x 3"', '6" X 4"', '8"') or
+    None if no size is present. The 3-dim form uses lowercase ' x ' to match
+    the precoat-tee callout convention; the 2-dim form uses ' X ' to match
+    the reducer convention.
+    """
+    d = description or ""
+    m = _SIZE_3.search(d)
+    if m:
+        return " x ".join(f'{g.strip()}"' for g in m.groups())
+    m = _SIZE_2.search(d)
+    if m:
+        return " X ".join(f'{g.strip()}"' for g in m.groups())
+    m = _SIZE_1.search(d)
+    if m:
+        return f'{(m.group(1) or m.group(2))}"'
+    return None
+
+
 def parse_quote(pdf_path: str) -> Quote:
     quote = Quote()
     current_section: Optional[str] = None

@@ -110,29 +110,12 @@ PART_MAPPING = {
     "1000-8895": {"page2_3_template": True, "filter_model": "SP-29-36-250-A"},
     # NB: extend for every filter you sell; pattern: any reference SP-* → filter
 
-    # ----- Guardian strainer -----
-    "1000-6270": {
-        "template": "guardian_strainer.pdf",
-        "callout_template": '({qty}) 8" REQ\'D w/ SPARE BASKET(S)',
-        "callout_xy": (365, 700),
-        "red_box_rows": ["8"],
-    },
+    # ----- Guardian strainer (FG) → see ACCESSORY_PAGES; routed by description
+    #       in the orchestrator, size parsed from the quote -----
 
-    # ----- Precoat tee -----
-    "1000-6232": {
-        "template": "precoat_tee.pdf",
-        "callout_template": '({qty}) 8" x 5" x 3" REQ\'D',
-        "callout_xy": (520, 440),
-        "red_box_rows": ["8 x 5 x 3"],
-    },
+    # ----- Precoat tee → see ACCESSORY_PAGES (parts_catalog routes all sizes) -----
 
-    # ----- Concentric reducer -----
-    "1000-6213": {
-        "template": "concentric_reducer.pdf",
-        "callout_template": '({qty}) 6" X 4" REQ\'D',
-        "callout_xy": (440, 220),
-        "red_box_rows": ["6 x 4"],
-    },
+    # ----- Concentric reducer → see ACCESSORY_PAGES (parts_catalog routes all sizes) -----
 
     # ----- Compressor — one per filter, aggregated -----
     "1000-5648": {
@@ -260,6 +243,100 @@ VALVE_KIT_PAGES = {
 
 
 # ---------------------------------------------------------------------------
+# 3b. ACCESSORY PAGES — reducers / precoat tees / strainers / radial &
+#     perpendicular grating.
+#
+# Part routing comes from parts_catalog.py (exact SAP part#) or, for radial /
+# perpendicular grating, from a Reference# rule in the orchestrator. The yellow
+# callout SIZE is parsed from the quote line description
+# (quote_parser.accessory_size) — NOT stored per part.
+#
+# Coordinate sourcing:
+#   - NEW pages (eccentric_reducer, reducer_ss, precoat_tee_ss, strainer_*,
+#     grating_radial, grating_perpendicular_*) use red_boxes_fixed +
+#     callout_xy lifted from each sheet's baked annotation (exact historical
+#     placement).
+#   - EXISTING pages (concentric_reducer, precoat_tee, guardian_strainer) keep
+#     their established callout_xy and detect the red row by the parsed size
+#     ("row_from_size": True) since those template files predate this batch.
+#
+# Entries flagged "verify": True have callout wording/coords that haven't been
+# checked against a real quote line yet (no radial/perpendicular grating on the
+# sample quote).
+# ---------------------------------------------------------------------------
+ACCESSORY_PAGES = {
+    # ----- Reducers -----
+    "concentric_reducer.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (440, 220),
+        "row_from_size": True,
+    },
+    "eccentric_reducer.pdf": {              # = reducer_fg.pdf (FG eccentric)
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (261, 138),
+        "red_boxes_fixed": [{"x": 23, "y": 62, "width": 190, "height": 21}],
+    },
+    "reducer_ss.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (263, 140),
+        "red_boxes_fixed": [{"x": 25, "y": 51, "width": 190, "height": 32}],
+    },
+    # ----- Precoat tees -----
+    "precoat_tee.pdf": {                    # existing FG page
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (520, 440),
+        "row_from_size": True,
+    },
+    "precoat_tee_ss.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (324, 235),
+        "red_boxes_fixed": [{"x": 29, "y": 229, "width": 219, "height": 32}],
+    },
+    # ----- Strainers -----
+    "guardian_strainer.pdf": {              # existing FG guardian
+        "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
+        "callout_xy": (365, 700),
+        "row_from_size": True,
+    },
+    "strainer_reducing.pdf": {
+        "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
+        "callout_xy": (196, 401),
+        "red_boxes_fixed": [{"x": 27, "y": 487, "width": 559, "height": 27}],
+    },
+    "strainer_straight.pdf": {
+        "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
+        "callout_xy": (209, 455),
+        "red_boxes_fixed": [{"x": 23, "y": 527, "width": 566, "height": 23}],
+    },
+    # ----- Radial / perpendicular grating (routed by Reference#) -----
+    # qty is footage (FOT) or each from the quote; wording pending real lines.
+    "grating_radial.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (158, 509),
+        "red_boxes_fixed": [{"x": 424, "y": 550, "width": 158, "height": 15}],
+        "verify": True,
+    },
+    "grating_perpendicular_0406.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (5, 384),
+        "verify": True,
+    },
+    "grating_perpendicular_0812.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (13, 427),
+        "red_boxes_fixed": [{"x": 18, "y": 622, "width": 196, "height": 13}],
+        "verify": True,
+    },
+    "grating_perpendicular_1420.pdf": {
+        "callout_template": "({qty}) {size} REQ'D",
+        "callout_xy": (7, 541),
+        "red_boxes_fixed": [{"x": 81, "y": 588, "width": 195, "height": 11}],
+        "verify": True,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # 4. PER-FILTER SCHEMATICS
 # ---------------------------------------------------------------------------
 # One schematic page per filter line item on the quote. Schematic file is
@@ -360,23 +437,27 @@ PAGE_ORDER = [
     # ----- Page 25 — Perlite (always-included) -----
     "perlite.pdf",
 
-    # ----- Page 26 — Guardian Fiberglass Hair Strainer (part-driven) -----
-    "guardian_strainer.pdf",
+    # ----- Strainers (part-driven) -----
+    "guardian_strainer.pdf",        # FG guardian
+    "strainer_reducing.pdf",        # SS reducing
+    "strainer_straight.pdf",        # SS straight
 
-    # ----- Page 27 — Precoat Tee (part-driven) -----
-    "precoat_tee.pdf",
+    # ----- Precoat tees (part-driven) -----
+    "precoat_tee.pdf",              # FG
+    "precoat_tee_ss.pdf",           # SS
 
-    # ----- Page 28 — Concentric Reducers (part-driven) -----
-    "concentric_reducer.pdf",
+    # ----- Reducers (part-driven) -----
+    "concentric_reducer.pdf",       # FG concentric
+    "eccentric_reducer.pdf",        # FG eccentric (was reducer_fg.pdf)
+    "reducer_ss.pdf",               # SS concentric + eccentric
 
-    # ----- Page 29 — Eccentric Reducers (pending template, part-driven) -----
-    "eccentric_reducer.pdf",
-
-    # ----- Page 30 — Grating Straight (part-driven) -----
-    "grating_straight.pdf",
-
-    # ----- Page 31 — Grating Corner (part-driven) -----
-    "grating_corner.pdf",
+    # ----- Grating (part-driven) -----
+    "grating_straight.pdf",         # parallel straight
+    "grating_corner.pdf",           # parallel corner
+    "grating_radial.pdf",           # parallel radial
+    "grating_perpendicular_0406.pdf",
+    "grating_perpendicular_0812.pdf",
+    "grating_perpendicular_1420.pdf",
 ]
 
 
