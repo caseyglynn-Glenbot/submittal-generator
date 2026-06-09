@@ -292,9 +292,21 @@ VALVE_KIT_PAGES = {
     },
     "drain_valve_extension.pdf": {
         "callout_template": '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}',
-        # Shifted +50 downwards from its prior spot (75, 500).
-        "callout_xy": (75, 550),
-        "row_search": '{precoat_size}',
+        # Seated in the white space BELOW the dimensions table. The table
+        # bottom border sits at ~626pt; the box top is placed at 636 (≈10pt
+        # gap). At 4 pool lines (64pt tall) it ends at ~700pt, clear of the
+        # page edge. Was (75, 550), which overlapped the table's upper rows.
+        "callout_xy": (75, 636),
+        # Unlike effluent/system_fill this template HAS a real text layer, but
+        # the table only ever lists drain sizes 3 and 4, so the rows are pinned
+        # (deterministic; matches the prior job's baked row-3 box exactly).
+        # drain size = precoat_size for these systems. A requested size with no
+        # row here (e.g. 6") draws no box, which is correct — there is no 6" row.
+        "size_keys": ["precoat_size"],
+        "pinned_rows": {
+            "3": [{"x": 164.6, "y": 604.9, "width": 283.3, "height": 13.4}],
+            "4": [{"x": 164.6, "y": 614.7, "width": 283.3, "height": 13.4}],
+        },
         # Only Imperial-family filters get a separate drain extension page;
         # Assero filters have the drain on the system fill/drain page
         "only_for_filter_family": "IMPERIAL",
