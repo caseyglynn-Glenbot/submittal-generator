@@ -277,8 +277,12 @@ ACCESSORY_PAGES = {
     # ----- Reducers -----
     "concentric_reducer.pdf": {
         "callout_template": "({qty}) {size} REQ'D",
-        "callout_xy": (440, 220),
-        "row_from_size": True,
+        # Callout placed at the sheet's intended spot (was (440,220), which
+        # landed off the mark). Red box located by the unique part number via
+        # PDF text search, within the table's column span x[23,213] — reliable
+        # on this dense table where OCR row detection failed.
+        "callout_xy": (261, 138),
+        "table_x": (23, 213),
     },
     "eccentric_reducer.pdf": {              # = reducer_fg.pdf (FG eccentric)
         "callout_template": "({qty}) {size} REQ'D",

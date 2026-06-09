@@ -128,6 +128,31 @@ def build_yellow_callouts(entry: dict, pool_ctx: dict, legacy_lines: list,
     return callouts
 
 
+def red_box_by_text(template_path, search_text, x_left, x_right, pad=2.0):
+    """Locate a catalog-table row by searching the PDF text layer for
+    `search_text` (typically the unique part number) and return a RedBox
+    spanning x_left..x_right at that row's vertical position, or None if not
+    found.
+
+    Deterministic and reliable on the dense reducer/tee/strainer tables, where
+    OCR-based row auto-detection mis-fires. Part numbers are unique per row, so
+    this lands on exactly the right size (e.g. 1000-6213 = the concentric 6x4
+    row), unlike a bare size like "6 x 4" which can appear in two tables.
+    """
+    try:
+        doc = fitz.open(str(template_path))
+        hits = doc[0].search_for(search_text)
+        doc.close()
+    except Exception:
+        return None
+    if not hits:
+        return None
+    r = hits[0]
+    return RedBox(x=x_left, y=r.y0 - pad,
+                  width=max(x_right - x_left, 1.0),
+                  height=(r.y1 - r.y0) + 2 * pad)
+
+
 def build_fixed_red_boxes(entry: dict):
     """Convert an entry's red_boxes_fixed dicts into explicit RedBox objects."""
     out = []
@@ -584,13 +609,16 @@ def generate_submittal(
         if not size:
             print(f"  WARNING: no size parsed for {li.part_number} {li.description!r}; skipping callout")
             continue
-        job = acc_jobs.setdefault(page, {"recipe": recipe, "callout_lines": [], "row_terms": []})
+        job = acc_jobs.setdefault(page, {"recipe": recipe, "callout_lines": [],
+                                         "row_terms": [], "part_numbers": []})
         line = recipe["callout_template"].format(qty=li.quantity, size=size)
         if line not in job["callout_lines"]:
             job["callout_lines"].append(line)
-        # Existing pages detect the red row by the parsed size; new pages use
-        # the page's fixed red box (red_boxes_fixed in the recipe).
-        if recipe.get("row_from_size") and size not in job["row_terms"]:
+        if li.part_number not in job["part_numbers"]:
+            job["part_numbers"].append(li.part_number)
+        # Red-box strategy per recipe: "table_x" => locate by part# text search
+        # (reliable); else "row_from_size" => OCR auto-detect by the parsed size.
+        if not recipe.get("table_x") and recipe.get("row_from_size") and size not in job["row_terms"]:
             job["row_terms"].append(size)
 
     for page, job in acc_jobs.items():
@@ -602,11 +630,21 @@ def generate_submittal(
         cx, cy = recipe["callout_xy"]
         callouts = [YellowCallout(x=cx, y=cy, lines=job["callout_lines"])]
         out_path = OUTPUT_DIR / f"acc_{page}"
+        # Part-number-located red boxes (text search) + any recipe fixed boxes.
+        fixed = build_fixed_red_boxes(recipe)
+        tx = recipe.get("table_x")
+        if tx:
+            for pn in job["part_numbers"]:
+                rb = red_box_by_text(template_path, pn, tx[0], tx[1])
+                if rb:
+                    fixed.append(rb)
+                else:
+                    print(f"  WARNING: part# {pn} not found on {page}; no red box drawn")
         annotate_page(template_path, callouts, job["row_terms"], out_path,
-                      fixed_red_boxes=build_fixed_red_boxes(recipe))
+                      fixed_red_boxes=fixed)
         produced_pages[page] = out_path
         flag = " [VERIFY wording]" if recipe.get("verify") else ""
-        print(f"  {page} ← {len(job['callout_lines'])} callout line(s){flag}")
+        print(f"  {page} ← {len(job['callout_lines'])} callout line(s), {len(fixed)} red box(es){flag}")
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5 — Emit produced pages in PAGE_ORDER, append leftovers at end
