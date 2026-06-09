@@ -324,6 +324,19 @@ def _project_name_for_cover(raw: str) -> str:
     return cleaned or raw
 
 
+def _is_filter_line(li) -> bool:
+    """A line item is a filter if it's a 'FILTER DEFENDER' line carrying a
+    recognizable SP-XX model. This is layout- and catalog-agnostic: it does
+    not require the part number to be pre-registered in PART_MAPPING, so new
+    filter part numbers (e.g. SP-41/SP-55) are picked up automatically as
+    long as the parser populates the reference from the description.
+    """
+    return (
+        "FILTER DEFENDER" in li.description.upper()
+        and filter_size_key(li.reference) > 0
+    )
+
+
 def _filter_line_items_sorted(quote):
     """Return the filter line items from the quote, sorted largest SP-XX first.
 
@@ -338,8 +351,7 @@ def _filter_line_items_sorted(quote):
     """
     indexed = []
     for idx, li in enumerate(quote.line_items):
-        m = PART_MAPPING.get(li.part_number)
-        if m and m.get("page2_3_template"):
+        if _is_filter_line(li):
             indexed.append((idx, li))
     indexed.sort(key=lambda pair: (-filter_size_key(pair[1].reference), pair[0]))
     return [li for _, li in indexed]
@@ -571,6 +583,8 @@ def generate_submittal(
     print("\n--- Part-driven pages ---")
     page_jobs = {}
     for li in quote.line_items:
+        if _is_filter_line(li):
+            continue  # filters are handled by the datasheet/schematic steps
         if resolve_accessory_page(li):
             continue  # handled by the accessory loop (step 4d)
         m = PART_MAPPING.get(li.part_number)

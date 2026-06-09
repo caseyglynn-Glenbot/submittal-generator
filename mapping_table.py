@@ -175,16 +175,33 @@ import re
 
 
 def parse_valve_kit_sizes(description: str):
-    """Parse '8/6/3/3SG' → dict of sizes, or None if no match."""
+    """Parse valve-kit sizes from a description, or None if no match.
+
+    Two code forms appear across quote layouts:
+      4-part: "8/6/3/3SG"  -> influent/effluent/precoat/sightglass
+      3-part: "8/6/3"      -> influent/effluent/precoat (no sightglass token)
+
+    The in-line sightglass always matches the precoat size (verified across
+    every example: 8/6/3 -> SG3, 12/10/6 -> SG6, 10/8/4 -> SG4), so for the
+    3-part form the sightglass is taken from the precoat value.
+    """
     m = re.search(r'(\d+)/(\d+)/(\d+)/(\d+)SG', description)
-    if not m:
-        return None
-    return {
-        "influent": int(m.group(1)),
-        "effluent": int(m.group(2)),
-        "precoat": int(m.group(3)),
-        "sightglass": int(m.group(4)),
-    }
+    if m:
+        return {
+            "influent": int(m.group(1)),
+            "effluent": int(m.group(2)),
+            "precoat": int(m.group(3)),
+            "sightglass": int(m.group(4)),
+        }
+    m = re.search(r'(\d+)/(\d+)/(\d+)(?!\s*/)', description)
+    if m:
+        return {
+            "influent": int(m.group(1)),
+            "effluent": int(m.group(2)),
+            "precoat": int(m.group(3)),
+            "sightglass": int(m.group(3)),
+        }
+    return None
 
 
 # Each entry generates one annotated page covering all pools that have a
@@ -217,6 +234,26 @@ VALVE_KIT_PAGES = {
         # Was centered on the green-X (10, 422); shifted +100 to the right.
         "callout_xy": (110, 422),
         "row_search": '{precoat_size}',
+        # Imperial filters use this fill-only page + the separate drain
+        # extension page. Assero (SP-29) uses the combined page below instead.
+        "only_for_filter_family": "IMPERIAL",
+    },
+    "system_fill_drain_valve_assero.pdf": {
+        # Combined System Fill & Drain Valve cut sheet — used for Assero (SP-29)
+        # filters, which carry both the fill and the drain on one page. precoat
+        # size is the system-fill AND drain valve size for these systems.
+        "callout_template": (
+            '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}\n'
+            '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}'
+        ),
+        "callout_xy": (362, 472),
+        # Red boxes pinned to the 3" rows (Part-Numbers + Dimensions tables) —
+        # the standard SP-29 fill/drain size. Revisit if a non-3" SP-29 appears.
+        "red_boxes_fixed": [
+            {"x": 346, "y": 562, "width": 113, "height": 14},
+            {"x": 74,  "y": 657, "width": 458, "height": 13},
+        ],
+        "only_for_filter_family": "ASSERO",
     },
     "drain_valve_extension.pdf": {
         "callout_template": '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}',
@@ -371,7 +408,7 @@ GRATING_PARALLEL_STRAIGHT = {
 # this dict to keyed by the exact model and add a fallback to family.
 SCHEMATIC_BY_FAMILY = {
     "IMPERIAL": "defender_filter_schematic_lap.pdf",
-    "ASSERO":   "defender_filter_schematic_activity.pdf",
+    "ASSERO":   "defender_sp29_schematic.pdf",
 }
 
 
@@ -415,6 +452,7 @@ PAGE_ORDER = [
 
     # ----- Page 12 — System Fill & Drain Valve (valve-kit) -----
     "system_fill_drain_valve.pdf",
+    "system_fill_drain_valve_assero.pdf",
 
     # ----- Page 13 — Drain Valve with Extension (valve-kit, Imperial only) -----
     "drain_valve_extension.pdf",
