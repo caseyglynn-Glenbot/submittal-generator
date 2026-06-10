@@ -5,7 +5,7 @@ Builds the submittal as a strict sequence:
 
   1. Cover page                                       (special-cased)
   2. Filter datasheets, one per filter line item      (sorted largest SP-XX first)
-  3. Per-filter schematics, one per filter line item  (same order as datasheets)
+  3. Filter schematics, one per distinct type/family   (IMPERIAL + SP-29 max)
   4. Static spec pages + part-driven pages            (ordered per PAGE_ORDER)
   5. Pages produced this run but not in PAGE_ORDER    (appended with WARNING)
 
@@ -524,22 +524,31 @@ def generate_submittal(
         print(f"  {li.reference} → {out_path.name}")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 3 — Per-filter schematics (same order as datasheets)
+    # Step 3 — Filter schematics (one per schematic TYPE, deduped)
     # ─────────────────────────────────────────────────────────────────────
-    # One schematic per filter, even when two filters share the same model.
-    # File chosen by family lookup; orchestrator does NOT special-case the
-    # filename, so adding per-model schematics later is a mapping_table edit.
-    print(f"\n--- Per-filter schematics ({len(sorted_filters)} filter(s)) ---")
+    # Schematics are generic per filter FAMILY, not per filter: every IMPERIAL
+    # filter shares defender_filter_schematic_lap.pdf and every ASSERO (SP-29)
+    # filter shares defender_sp29_schematic.pdf. So a job with several filters
+    # of the same family only needs that schematic once. Walk filters in
+    # datasheet order and include each distinct schematic file the first time
+    # its family appears; later filters of an already-included type are skipped.
+    # Result: at most one IMPERIAL schematic and one SP-29 schematic.
+    print(f"\n--- Filter schematics (one per type) ---")
+    included_schematics = set()
     for li in sorted_filters:
         family = get_filter_family_for_reference(li.reference)
         schematic_name = SCHEMATIC_BY_FAMILY.get(family)
         if not schematic_name:
             print(f"  WARNING: no schematic configured for family {family!r} ({li.reference})")
             continue
+        if schematic_name in included_schematics:
+            print(f"  {li.reference} ({family}) → {schematic_name} [duplicate type, skipped]")
+            continue
         schematic_path = TEMPLATE_DIR / schematic_name
         if not schematic_path.exists():
             print(f"  MISSING: {schematic_name} (for filter {li.reference}, family {family})")
             continue
+        included_schematics.add(schematic_name)
         pages_to_merge.append(schematic_path)
         print(f"  {li.reference} ({family}) → {schematic_name}")
 
