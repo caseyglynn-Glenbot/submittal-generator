@@ -255,22 +255,26 @@ VALVE_KIT_PAGES = {
         # Dimensions (lower) — one box each. precoat_size is the system-fill
         # valve size for Imperial filters. (Distinct raster from
         # system_fill_drain_valve_assero.pdf — coords differ; measure per file.)
+        # NOTE: both tables' right borders are ~530 (Part# 530.0, Dims H-col
+        # 530.6). The full-height vertical at 587.5 is the PAGE FRAME, not a
+        # table border — do not extend box widths to it (that overshoot was the
+        # bug fixed here: dims width is 530.6-75.5=455.1, not 512.0).
         "size_keys": ["precoat_size"],
         "pinned_rows": {
             "2":     [{"x": 348.2, "y": 545.2, "width": 181.8, "height": 9.3},
-                      {"x": 75.5,  "y": 640.2, "width": 512.0, "height": 9.6}],
+                      {"x": 75.5,  "y": 640.2, "width": 455.1, "height": 9.6}],
             "2 1/2": [{"x": 348.2, "y": 554.5, "width": 181.8, "height": 9.7},
-                      {"x": 75.5,  "y": 649.8, "width": 512.0, "height": 9.7}],
+                      {"x": 75.5,  "y": 649.8, "width": 455.1, "height": 9.7}],
             "3":     [{"x": 348.2, "y": 564.2, "width": 181.8, "height": 9.6},
-                      {"x": 75.5,  "y": 659.5, "width": 512.0, "height": 9.3}],
+                      {"x": 75.5,  "y": 659.5, "width": 455.1, "height": 9.3}],
             "4":     [{"x": 348.2, "y": 573.8, "width": 181.8, "height": 9.4},
-                      {"x": 75.5,  "y": 668.8, "width": 512.0, "height": 9.4}],
+                      {"x": 75.5,  "y": 668.8, "width": 455.1, "height": 9.4}],
             "5":     [{"x": 348.2, "y": 583.2, "width": 181.8, "height": 9.6},
-                      {"x": 75.5,  "y": 678.2, "width": 512.0, "height": 9.6}],
+                      {"x": 75.5,  "y": 678.2, "width": 455.1, "height": 9.6}],
             "6":     [{"x": 348.2, "y": 592.8, "width": 181.8, "height": 9.4},
-                      {"x": 75.5,  "y": 687.8, "width": 512.0, "height": 9.4}],
+                      {"x": 75.5,  "y": 687.8, "width": 455.1, "height": 9.4}],
             "8":     [{"x": 348.2, "y": 602.2, "width": 181.8, "height": 9.6},
-                      {"x": 75.5,  "y": 697.2, "width": 512.0, "height": 9.6}],
+                      {"x": 75.5,  "y": 697.2, "width": 455.1, "height": 9.6}],
         },
     },
     "system_fill_drain_valve_assero.pdf": {
