@@ -19,6 +19,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Header
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 
 from orchestrator import generate_submittal
 
@@ -140,16 +141,20 @@ async def generate(
         if not output_path.exists():
             raise HTTPException(500, "Generation produced no output")
 
-        # Stream the result back to the caller
+        # Stream the result back to the caller, then delete the per-request
+        # workdir once the response has finished sending. Render does NOT clean
+        # /tmp, so without this the quote + raw + final PDFs leak every request.
         return FileResponse(
             str(output_path),
             media_type="application/pdf",
             filename=f"submittal_{Path(quote_pdf.filename).stem}.pdf",
-            # Render will clean up workdir after response is sent
+            background=BackgroundTask(shutil.rmtree, str(workdir), ignore_errors=True),
         )
 
     except HTTPException:
+        shutil.rmtree(workdir, ignore_errors=True)
         raise
     except Exception as e:
+        shutil.rmtree(workdir, ignore_errors=True)
         logger.exception("Generation failed")
         raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")

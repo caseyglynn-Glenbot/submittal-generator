@@ -14,6 +14,7 @@ mapping_table.py is the single source of truth for everything after the
 schematics — to reposition any page, edit that list.
 """
 import re
+import gc
 import shutil
 import subprocess
 import fitz
@@ -794,8 +795,13 @@ def generate_submittal(
         final.insert_pdf(src)
         src.close()
     raw_path = str(output_pdf) + ".raw.pdf"
-    final.save(raw_path, garbage=4, deflate=True, clean=True)
+    # garbage=1 (single pass) + no clean=True: a full garbage=4/clean rewrite
+    # holds the whole document in memory a second time, which—stacked on the
+    # gs /ebook re-render below—OOM-killed the 512MB instance. deflate stays on.
+    final.save(raw_path, garbage=1, deflate=True)
     final.close()
+    del final
+    gc.collect()  # release the merged doc's RSS before gs spawns its own pass
     # Slim the merged output (image downsampling) so the binary stays small
     # enough to pass back through n8n without exhausting its memory.
     _compress_pdf(raw_path, str(output_pdf))

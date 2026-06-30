@@ -8,8 +8,12 @@ Extracts:
 Output is the structured payload the rest of the workflow consumes.
 """
 import re
+import io
 import json
 import pdfplumber
+import fitz  # PyMuPDF — rasterize pages for the OCR fallback
+import pytesseract
+from PIL import Image
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 
@@ -33,6 +37,7 @@ class Quote:
     customer: str = ""
     customer_address: str = ""
     quote_date: str = ""
+    ocr_used: bool = False
     line_items: List[LineItem] = field(default_factory=list)
 
 
@@ -57,6 +62,15 @@ _SIZE_1 = re.compile(r'GUARDIAN\s+(\d+)|(\d+)\s+(?:FG|SS|T316)', re.I)
 # otherwise.
 _ITEM_RE = re.compile(
     r"^\d+\s+(\d{3,4}-\d{4})\s+(\d+)(?:\s+(?:EA|FOT))?(?:\s+\$\s*([\d,]+\.\d{2}))?"
+)
+
+# OCR-tolerant variant — used ONLY when a quote was recovered via OCR, where the
+# leading item number, the qty, and the unit token are all unreliable. It keys
+# off the 100x-xxxx part number and anchors at line start so a misread address
+# ZIP (e.g. "46172-9538") can't be promoted to a line item. The strict text-path
+# regex above is unchanged, so validated text layouts are byte-identical.
+_ITEM_RE_OCR = re.compile(
+    r"^\s*(?:\d+\s+)?(100\d-\d{4})(?:\s+(\d+))?(?:\s+(?:EA|FOT))?"
 )
 
 # Filter model embedded in a "FILTER DEFENDER SP-33-48-732" description.
@@ -115,134 +129,221 @@ def accessory_size(description: str):
     return None
 
 
+def _ocr_page(fitz_doc, page_index: int, dpi: int = 150) -> str:
+    """Rasterize one page with PyMuPDF and OCR it with Tesseract.
+
+    Pages are processed one at a time by the caller and the pixmap/image are
+    released immediately so a scanned multi-page quote stays memory-bounded on
+    the 2GB instance.
+    """
+    page = fitz_doc.load_page(page_index)
+    pix = page.get_pixmap(dpi=dpi)
+    try:
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        try:
+            return pytesseract.image_to_string(img)
+        finally:
+            img.close()
+    finally:
+        pix = None  # drop the bitmap before the next page
+
+
+def _page_texts(pdf_path: str):
+    """Return (list-of-page-text, ocr_used).
+
+    The text layer is tried first. If the document is effectively empty
+    (a scanned / printed-to-image / flattened export), every page is OCR'd
+    one at a time. A text quote never hits the OCR branch, so its output is
+    identical to the pre-patch parser.
+    """
+    with pdfplumber.open(pdf_path) as pdf:
+        raw = [(p.extract_text() or "") for p in pdf.pages]
+    doc_chars = sum(len(re.sub(r"\s", "", t)) for t in raw)
+    if doc_chars >= 40:  # has a real text layer
+        return raw, False
+
+    fitz_doc = fitz.open(pdf_path)
+    try:
+        return [_ocr_page(fitz_doc, i) for i in range(fitz_doc.page_count)], True
+    finally:
+        fitz_doc.close()
+
+
+def _extract_project_name(header_text: str) -> str:
+    """Three strategies, tried in order. Strategy 1 reproduces the original
+    behavior exactly so Ontario / Fort Saskatchewan stay identical."""
+    # 1) 'Project Name:' label anchored on an 'AS SOLD' / 'ASSOLD' marker
+    #    (re.S lets the name span a wrapped continuation line).
+    m = re.search(
+        r"Project Name\s*:\s*(.+?)\s*-?\s*(?:AS\s*SOLD|ASSOLD)",
+        header_text, re.S,
+    )
+    if m:
+        return re.sub(r"\s+", " ", m.group(1)).strip().rstrip("-").strip()
+
+    # 2) 'Project Name:' label with no AS SOLD marker (wrapped continuation).
+    m = re.search(r"Project Name\s*:\s*(.+)", header_text)
+    if m:
+        name = re.sub(r"\s+", " ", m.group(1)).strip()
+        name = re.split(r"\s{2,}|Account ID|Quote Number|Page \d", name)[0]
+        return name.rstrip("-").strip()
+
+    # 3) A Prepared-For block line ending in '- AS SOLD' / 'ASSOLD'
+    #    (covers layouts with no 'Project Name:' field at all, e.g. Worthington).
+    for line in header_text.split("\n"):
+        if re.search(r"-\s*(?:AS\s*SOLD|ASSOLD)\s*$", line, re.I):
+            return re.sub(
+                r"\s*-?\s*(?:AS\s*SOLD|ASSOLD)\s*$", "", line, flags=re.I
+            ).strip()
+    return ""
+
+
+# Repeated page furniture that OCR scatters into the line stream; never a
+# legitimate line-item description.
+_FURNITURE_RE = re.compile(
+    r"^(Page \d+|Item Part No|Part No|Description|Quote Number|Account ID|"
+    r".*Subtotal.*|Total\b.*|Currency\b.*)$", re.I,
+)
+
+
+def _is_furniture(text: str) -> bool:
+    return bool(_FURNITURE_RE.match((text or "").strip()))
+
+
 def parse_quote(pdf_path: str) -> Quote:
     quote = Quote()
     current_section: Optional[str] = None
 
-    with pdfplumber.open(pdf_path) as pdf:
-        # Pull header metadata from page 1-2
-        header_text = "\n".join(
-            p.extract_text() or "" for p in pdf.pages[:3]
-        )
-        m = re.search(r"Quote Number\s*:\s*([\w-]+)", header_text)
-        if m:
-            quote.quote_number = m.group(1)
-        m = re.search(r"Account ID:\s*(\d+)", header_text)
-        if m:
-            quote.account_id = m.group(1)
-        # Project name may wrap across two lines and end with either
-        # "-AS SOLD" (Ontario) or "- ASSOLD" (Fort Saskatchewan).
-        m = re.search(
-            r"Project Name\s*:\s*(.+?)\s*-?\s*(?:AS\s*SOLD|ASSOLD)",
-            header_text,
-            re.S,
-        )
-        if m:
-            quote.project_name = (
-                re.sub(r"\s+", " ", m.group(1)).strip().rstrip("-").strip()
+    # Text layer first; OCR fallback only if the document is effectively empty.
+    pages_text, ocr_used = _page_texts(pdf_path)
+    quote.ocr_used = ocr_used
+    item_re = _ITEM_RE_OCR if ocr_used else _ITEM_RE
+
+    # Header metadata from the first up-to-3 pages.
+    header_text = "\n".join(pages_text[:3])
+    m = re.search(r"Quote Number\s*:\s*([\w-]+)", header_text)
+    if m:
+        quote.quote_number = m.group(1)
+    m = re.search(r"Account ID:\s*(\d+)", header_text)
+    if m:
+        quote.account_id = m.group(1)
+
+    # Project name — three strategies (label+marker, wrapped label, Prepared-For).
+    quote.project_name = _extract_project_name(header_text)
+
+    # Customer: line right after "Proposal For:" header
+    for line in header_text.split("\n"):
+        if "Proposal For:" in line:
+            # Customer name may be on same line after the label or next non-empty line
+            after = line.split("Proposal For:", 1)[1].strip()
+            if after:
+                # Strip trailing salesperson name (usually 2 capitalized words)
+                after = re.sub(r"\s+[A-Z][a-z]+\s+[A-Z][a-z]+$", "", after)
+                quote.customer = after.strip()
+            break
+    m = re.search(r"(\d{2}/\d{2}/\d{2})", header_text)
+    if m:
+        quote.quote_date = m.group(1)
+
+    # Flat line stream across all pages; current_section persists across breaks.
+    all_lines = []
+    for t in pages_text:
+        all_lines.extend(t.split("\n"))
+
+    prev_nonempty = ""
+    i = 0
+    while i < len(all_lines):
+        line = all_lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        # Section header detection. The section name is the line after a
+        # "Currency: ..." line or the "Item Pricing Summary" heading. Reject
+        # subtotal/total/furniture rows (the multi-pool "Comp Pool" bug labeled
+        # the section with its subtotal line) and strip any trailing price an
+        # OCR merge may have appended to the title.
+        if ("Currency" in prev_nonempty) or ("Item Pricing Summary" in prev_nonempty):
+            if (
+                not line.startswith("Currency")
+                and "Unit Price" not in line
+                and not item_re.match(line)
+                and not _is_furniture(line)
+                and not _is_price_fragment(line)
+            ):
+                current_section = (
+                    re.sub(r"\s*\$?[\d,]+\.\d{2}\s*$", "", line).strip() or line
+                )
+
+        # Line-item detection
+        m = item_re.match(line)
+        if m and current_section:
+            part_no = m.group(1)
+            qty = (
+                int(m.group(2))
+                if (m.lastindex and m.lastindex >= 2 and m.group(2))
+                else 1  # OCR drops the qty column often; default to 1
             )
-        # Customer: line right after "Proposal For:" header
-        for i, line in enumerate(header_text.split("\n")):
-            if "Proposal For:" in line:
-                # Customer name may be on same line after the label or next non-empty line
-                after = line.split("Proposal For:", 1)[1].strip()
-                if after:
-                    # Strip trailing salesperson name (usually 2 capitalized words)
-                    after = re.sub(r"\s+[A-Z][a-z]+\s+[A-Z][a-z]+$", "", after)
-                    quote.customer = after.strip()
+            unit_price = (
+                float(m.group(3).replace(",", ""))
+                if (not ocr_used and m.lastindex and m.lastindex >= 3 and m.group(3))
+                else 0.0  # price is not recovered on the OCR path
+            )
+
+            # Description: next non-empty line that isn't a unit indicator, a
+            # "Reference" line, a stray wrapped-price fragment, or page furniture
+            # (page numbers / repeated headers / totals) scattered by OCR.
+            description = ""
+            for j in range(i + 1, min(i + 6, len(all_lines))):
+                candidate = all_lines[j].strip()
+                if not candidate:
+                    continue
+                if candidate in {"EA", "FOT"}:
+                    continue
+                if candidate.startswith("Reference"):
+                    continue
+                if _is_price_fragment(candidate):
+                    continue
+                if _is_furniture(candidate):
+                    continue
+                description = candidate
                 break
-        m = re.search(r"(\d{2}/\d{2}/\d{2})", header_text)
-        if m:
-            quote.quote_date = m.group(1)
 
-        # Walk every line of every page as one flat stream. Two quote
-        # layouts are supported:
-        #   Ontario: header is one line "Item Part No Qty Unit Price ...";
-        #            rows carry the unit price inline; each row has a
-        #            "Reference #:" line.
-        #   Fort Saskatchewan: header is three lines
-        #            ("Part No" / "Item Qty Unit Price ..." / "Description");
-        #            large prices wrap across lines; there is NO
-        #            "Reference #:" line (the model lives in the description).
-        #
-        # Section detection is layout-agnostic: the section name is always
-        # the line immediately following a "Currency: ..." line or the
-        # "Item Pricing Summary" heading. Flattening the pages means a
-        # section whose table begins on the next page is still attributed
-        # correctly, and current_section persists across page breaks.
-        all_lines = []
-        for page in pdf.pages:
-            all_lines.extend((page.extract_text() or "").split("\n"))
-
-        prev_nonempty = ""
-        i = 0
-        while i < len(all_lines):
-            line = all_lines[i].strip()
-            if not line:
-                i += 1
-                continue
-
-            # Section header detection
-            if ("Currency" in prev_nonempty) or ("Item Pricing Summary" in prev_nonempty):
-                if (
-                    not line.startswith("Currency")
-                    and "Unit Price" not in line
-                    and not _ITEM_RE.match(line)
-                ):
-                    current_section = line
-
-            # Line-item detection
-            m = _ITEM_RE.match(line)
-            if m and current_section:
-                part_no = m.group(1)
-                qty = int(m.group(2))
-                unit_price = float(m.group(3).replace(",", "")) if m.group(3) else 0.0
-
-                # Description: next non-empty line that isn't a unit
-                # indicator, a "Reference" line, or a stray price fragment
-                # left behind by a wrapped price cell.
-                description = ""
-                for j in range(i + 1, min(i + 6, len(all_lines))):
-                    candidate = all_lines[j].strip()
-                    if not candidate:
-                        continue
-                    if candidate in {"EA", "FOT"}:
-                        continue
-                    if candidate.startswith("Reference"):
-                        continue
-                    if _is_price_fragment(candidate):
-                        continue
-                    description = candidate
+            # Reference number (if a "Reference #:" line is present)
+            reference = ""
+            for j in range(i + 1, min(i + 6, len(all_lines))):
+                ref_match = re.search(r"Reference\s*#:\s*(\S+)", all_lines[j])
+                if ref_match:
+                    reference = ref_match.group(1)
                     break
 
-                # Reference number (if a "Reference #:" line is present)
-                reference = ""
-                for j in range(i + 1, min(i + 6, len(all_lines))):
-                    ref_match = re.search(r"Reference\s*#:\s*(\S+)", all_lines[j])
-                    if ref_match:
-                        reference = ref_match.group(1)
-                        break
+            # Filters with no Reference# line — recover the model (e.g.
+            # "SP-33-48-732") from the description so downstream family/sort/
+            # datasheet logic behaves identically to the Ontario layout.
+            if not reference and "FILTER DEFENDER" in description.upper():
+                sp = _SP_MODEL_RE.search(description)
+                if sp:
+                    reference = sp.group(1).upper()
 
-                # Fort Saskatchewan filters carry no Reference# line — recover
-                # the model (e.g. "SP-33-48-732") from the description so the
-                # downstream family/sort/datasheet logic behaves identically
-                # to the Ontario layout.
-                if not reference and "FILTER DEFENDER" in description.upper():
-                    sp = _SP_MODEL_RE.search(description)
-                    if sp:
-                        reference = sp.group(1).upper()
+            quote.line_items.append(LineItem(
+                section=current_section,
+                part_number=part_no,
+                description=description,
+                reference=reference,
+                quantity=qty,
+                unit_price=unit_price,
+            ))
 
-                quote.line_items.append(LineItem(
-                    section=current_section,
-                    part_number=part_no,
-                    description=description,
-                    reference=reference,
-                    quantity=qty,
-                    unit_price=unit_price,
-                ))
+        prev_nonempty = line
+        i += 1
 
-            prev_nonempty = line
-            i += 1
+    # Fail loud rather than emit a blank submittal: if even OCR recovered no
+    # line items, the caller gets a clear error instead of a cover-only PDF.
+    if not quote.line_items:
+        raise ValueError(
+            f"No line items recovered from {pdf_path!r} (ocr_used={ocr_used}). "
+            f"Refusing to emit a blank submittal — check the quote's text layer."
+        )
 
     return quote
 

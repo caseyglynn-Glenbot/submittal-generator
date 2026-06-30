@@ -5,7 +5,7 @@ services:
   - type: web
     name: submittal-generator
     runtime: docker
-    plan: starter  # $7/month; change to "free" for no-cost tier with sleep
+    plan: standard  # 2GB — end-of-pipeline compaction (fitz garbage + gs /ebook) peaks ~700MB-1.1GB; 512MB starter OOM-killed two-pool runs. Set via this file, NOT the dashboard (autoDeploy reverts dashboard changes on next push).
     healthCheckPath: /health
     envVars:
       - key: API_KEY

@@ -21,13 +21,14 @@ use this so they stay within the table borders on narrow tables (system fill
 valve, drain valve, etc.) instead of bleeding past the left/right edges.
 """
 import subprocess
+import os
 import cv2
 import numpy as np
 import pytesseract
 from pathlib import Path
 
 
-DPI = 200  # rendering DPI
+DPI = 150  # rendering DPI (was 200; 150 cuts the page array ~44% with no row-detection loss)
 PDF_DPI = 72  # PDF user-space DPI (1 point = 1/72 inch)
 
 
@@ -135,6 +136,14 @@ def detect_table_rows(template_pdf: str):
             "x_right_pt": r["x_right"] * px_to_pt,
             "width_pt":   (r["x_right"] - r["x_left"]) * px_to_pt,
         })
+
+    # Release the in-memory bitmap and the on-disk PNG; Render does not clean
+    # /tmp, so the rasterized pages would otherwise accumulate across requests.
+    del img
+    try:
+        os.remove(img_path)
+    except OSError:
+        pass
     return results
 
 
