@@ -9,12 +9,22 @@ Endpoints:
 
 Authentication: a shared secret header (X-API-Key) protects /generate.
 The key is read from the API_KEY environment variable.
+
+Concurrency model (Jul 2026 fix): generate_submittal() is CPU-bound and was
+previously called directly from the async endpoint, which froze the event
+loop for the entire run. Render's /health probes (5s timeout) went dark and
+the instance got killed mid-request. Generation now runs in a separate
+worker process via ProcessPoolExecutor, so the main process always answers
+/health no matter how heavy the pipeline gets.
 """
+import asyncio
+import functools
 import os
 import re
 import shutil
 import tempfile
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Header
@@ -37,8 +47,26 @@ logger = logging.getLogger("submittal_service")
 app = FastAPI(
     title="Neptune Benson Submittal Generator",
     description="Converts Evoqua quote PDFs into annotated submittal packages",
-    version="1.0.0",
+    version="1.1.0",
 )
+
+# One worker process, one job at a time. Keeps peak memory at a single
+# pipeline run (~700MB-1.1GB per render.yaml notes) on the 2GB plan while
+# leaving the main process free to serve /health. A second concurrent
+# /generate call queues behind the first instead of doubling memory.
+_executor: ProcessPoolExecutor | None = None
+
+
+@app.on_event("startup")
+def _start_executor():
+    global _executor
+    _executor = ProcessPoolExecutor(max_workers=1)
+
+
+@app.on_event("shutdown")
+def _stop_executor():
+    if _executor is not None:
+        _executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +77,9 @@ app = FastAPI(
 # either format from the caller and normalize to MM/DD/YY for the cover
 # page filler. This keeps the API tolerant of test calls via curl that
 # pass the US format directly.
+#
+# As of Jul 2026 the n8n form no longer collects a return date, so the
+# field is optional; empty input normalizes to "".
 _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _US_DATE_2 = re.compile(r"^(\d{2})/(\d{2})/(\d{2})$")
 _US_DATE_4 = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
@@ -94,7 +125,8 @@ async def generate(
     quote_pdf: UploadFile = File(...),
     job_number: str = Form(""),
     engineer_initials: str = Form(""),
-    submittal_return_date: str = Form(...),
+    submittal_return_date: str = Form(""),  # optional since Jul 2026 form change
+    project_name: str = Form(""),  # optional override of the quote-parsed name
     x_api_key: str = Header(default=""),
 ):
     # ----- Authentication -----
@@ -112,8 +144,9 @@ async def generate(
 
     workdir = Path(tempfile.mkdtemp(prefix="submittal_"))
     logger.info(
-        "Generate request: file=%s job=%s initials=%s return_date=%s (normalized: %s)",
-        quote_pdf.filename, job_number, engineer_initials,
+        "Generate request: file=%s job=%s initials=%s project_name=%s "
+        "return_date=%s (normalized: %s)",
+        quote_pdf.filename, job_number, engineer_initials, project_name,
         submittal_return_date, normalized_return_date,
     )
 
@@ -128,15 +161,20 @@ async def generate(
                     raise HTTPException(413, "Quote PDF exceeds 10MB limit")
                 f.write(chunk)
 
-        # Run the pipeline
+        # Run the pipeline in the worker process so the event loop stays
+        # free to answer /health while WeasyPrint/OCR churn.
         output_path = workdir / "submittal.pdf"
-        generate_submittal(
+        job = functools.partial(
+            generate_submittal,
             str(quote_path),
             str(output_path),
             job_number=job_number,
             engineer_initials=engineer_initials,
             submittal_return_date=normalized_return_date,
+            project_name=project_name.strip(),
         )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_executor, job)
 
         if not output_path.exists():
             raise HTTPException(500, "Generation produced no output")
