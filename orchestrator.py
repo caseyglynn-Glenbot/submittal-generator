@@ -464,10 +464,16 @@ def generate_submittal(
     job_number: str = "",
     engineer_initials: str = "",
     submittal_return_date: str = "",
+    project_name: str = "",
 ):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     quote = parse_quote(quote_pdf)
     print(f"Parsed quote: {quote.project_name} ({len(quote.line_items)} items)")
+
+    # Optional override from the n8n form. Falls back to the quote-parsed name.
+    effective_project_name = (project_name or "").strip() or quote.project_name
+    if (project_name or "").strip():
+        print(f"  Project name override: {effective_project_name}")
 
     pages_to_merge = []
 
@@ -478,7 +484,7 @@ def generate_submittal(
     if cover_template.exists():
         cover_out = OUTPUT_DIR / "cover_page_filled.pdf"
         effective_job = job_number or quote.quote_number
-        cover_project_name = _project_name_for_cover(quote.project_name)
+        cover_project_name = _project_name_for_cover(effective_project_name)
         _, cover_report = fill_cover_page(
             template_path=cover_template,
             project_name=cover_project_name,
@@ -514,7 +520,7 @@ def generate_submittal(
         out_path = OUTPUT_DIR / f"datasheet_{li.section.replace(' ', '_')}.pdf"
         fill_datasheet(
             str(template_path), str(out_path),
-            project_name=f"{quote.project_name} Renovation",
+            project_name=f"{_project_name_for_cover(effective_project_name)} Renovation",
             pool_name=pool_name,
             client_name=quote.customer,
             job_number=job_number or quote.quote_number,
