@@ -56,7 +56,10 @@ STATIC_PAGES = [
     # in the orchestrator.
     "filter_model_information.pdf",   # page 5  — pending template
     "par_light.pdf",                   # page 23 — pending template
-    "eccentric_reducer.pdf",           # page 28 — pending template
+    # eccentric_reducer.pdf removed from static placeholders (Jul 2026):
+    # its template now exists, which made this "pending" entry include the
+    # reducer sheet on every submittal. Reducers are quote-driven only,
+    # via ACCESSORY_PAGES + parts_catalog part-number routing.
 ]
 
 
