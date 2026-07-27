@@ -150,11 +150,22 @@ PART_MAPPING = {
         "red_box_rows": [],
     },
 
-    # ----- Filter cleaner — typically ships with filter -----
+    # ----- Filter cleaner (Chem-Clean Express) — typically ships with filter.
+    # Both pail sizes land on the same cut sheet; {pail_label} carries the
+    # per-part size so mixed 25#/55# quotes stack correct lines in one box.
+    # Callout xy sits on the sheet's yellow placeholder (template strips it).
+    "13250": {
+        "template": "filter_cleaner.pdf",
+        "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
+        "callout_xy": (383, 394),
+        "pail_label": "25#",
+        "red_box_rows": [],
+    },
     "13251": {
         "template": "filter_cleaner.pdf",
-        "callout_template": "({qty}) 55# PAIL(S) REQ'D",
-        "callout_xy": (650, 600),
+        "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
+        "callout_xy": (383, 394),
+        "pail_label": "55#",
         "red_box_rows": [],
     },
 

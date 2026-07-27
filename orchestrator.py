@@ -703,7 +703,8 @@ def generate_submittal(
             job["aggregate_total"] += li.quantity
             continue
 
-        ctx = {"qty": li.quantity, "pool_label": get_pool_label(li.section)}
+        ctx = {"qty": li.quantity, "pool_label": get_pool_label(li.section),
+               "pail_label": m.get("pail_label", "")}
         job["pool_ctx"][get_pool_label(li.section)] = ctx
         if job["callout_pattern"]:
             callout = job["callout_pattern"].format(**ctx)
