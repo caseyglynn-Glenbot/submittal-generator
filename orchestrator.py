@@ -570,13 +570,34 @@ def generate_submittal(
 
     # ----- 4a: Static spec pages -----
     print("\n--- Static spec pages ---")
+    PERLITE_PART = "1000-5852"
+    PERLITE_KEYWORDS = ("PERLITE", "AQUAPERL", "HARBORLITE")
     for static_name in STATIC_PAGES:
         path = TEMPLATE_DIR / static_name
-        if path.exists():
-            produced_pages[static_name] = path
-            print(f"  {static_name}")
-        else:
+        if not path.exists():
             print(f"  MISSING (skipped): {static_name}")
+            continue
+
+        if static_name == "perlite.pdf":
+            # Bag count from the quote: the perlite part number, or any line
+            # whose description names the media. Falls back to the template's
+            # baked "(-) 25# BAGS REQ'D" placeholder when the quote has none.
+            bags = sum(
+                li.quantity for li in quote.line_items
+                if li.part_number == PERLITE_PART
+                or any(k in li.description.upper() for k in PERLITE_KEYWORDS)
+            )
+            if bags:
+                out_path = OUTPUT_DIR / "acc_perlite.pdf"
+                callouts = [YellowCallout(x=227, y=666,
+                                          lines=[f"({bags}) 25# BAGS REQ'D"])]
+                annotate_page(path, callouts, [], out_path)
+                produced_pages[static_name] = out_path
+                print(f"  perlite.pdf ← ({bags}) 25# BAGS REQ'D")
+                continue
+
+        produced_pages[static_name] = path
+        print(f"  {static_name}")
 
     # ----- 4b: Valve-kit-derived annotated pages -----
     print("\n--- Valve-kit-derived pages ---")

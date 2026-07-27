@@ -156,7 +156,7 @@ PART_MAPPING = {
     },
 
     # ----- Parts that don't produce their own page -----
-    "1000-5852": {"skip": True},   # perlite — now always-included via STATIC_PAGES
+    "1000-5852": {"skip": True},   # perlite — always-included via STATIC_PAGES; bag qty annotated in orchestrator 4a
     "1000-8397": {"skip": True},   # spare strainer basket — shown with strainer
     "1001-9810": {"skip": True},   # "Filter System - Defender" parent line
 }
