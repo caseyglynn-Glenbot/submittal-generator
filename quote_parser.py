@@ -121,6 +121,34 @@ def reducer_type(description: str) -> str:
     return ""
 
 
+def vfd_specs(description: str):
+    """Parse a greendrive VFD line description into its electrical specs.
+
+    'VFD FC-202 230V 7.5 HP 3PH NEMA12 NO BP' ->
+        {'volt': 230, 'hp': 7.5, 'hp_str': '7.5', 'ph': 3, 'bypass': False}
+
+    Returns None for non-VFD lines. 'bypass' is False when the description
+    carries a NO BP / NO BYPASS marker (the common pool case), True otherwise.
+    """
+    u = (description or "").upper()
+    if not re.search(r'\bVFD\b', u):
+        return None
+    mv = re.search(r'\b(\d{3})\s*V\b', u)
+    mh = re.search(r'\b(\d+(?:\.\d+)?)\s*HP\b', u)
+    mp = re.search(r'\b(\d)\s*PH\b', u)
+    if not (mv and mh):
+        return None
+    hp = float(mh.group(1))
+    hp_str = mh.group(1).rstrip("0").rstrip(".") if "." in mh.group(1) else mh.group(1)
+    return {
+        "volt": int(mv.group(1)),
+        "hp": hp,
+        "hp_str": hp_str,
+        "ph": int(mp.group(1)) if mp else 3,
+        "bypass": not re.search(r'NO\s*(?:BP|BYPASS)\b', u),
+    }
+
+
 def accessory_size(description: str):
     """Parse the AxBxC / AxB / single size token from a description.
 
@@ -351,6 +379,32 @@ def parse_quote(pdf_path: str) -> Quote:
 
         # Line-item detection
         m = item_re.match(line)
+
+        # Fallback: rows whose Part No cell holds free text instead of a
+        # NNNN-NNNN part number (e.g. Ulster item 20, "20 VFD FC-202 230V
+        # 40 HP 3PH NEMA12 NO BP 1 $8,749.51 $8,749.51"). Strictly gated so
+        # ordinary rows (which match item_re above) are untouched: the whole
+        # row must be item#, an UPPERCASE description with no $ signs, a bare
+        # qty, then the two trailing price columns.
+        if not m and current_section and not ocr_used:
+            fm = re.match(
+                r"^(\d{1,3})\s+([A-Z][A-Z0-9 ./&#*'\-]{8,}?)\s+(\d{1,4})"
+                r"(?:\s+EA|\s+FOT)?\s+\$\s*([\d,]+\.\d{2})\s+\$\s*[\d,]+\.\d{2}\s*$",
+                line,
+            )
+            if fm and fm.group(2) == fm.group(2).upper() and not _is_furniture(line):
+                quote.line_items.append(LineItem(
+                    section=current_section,
+                    part_number="",
+                    description=fm.group(2).strip(),
+                    reference="",
+                    quantity=int(fm.group(3)),
+                    unit_price=float(fm.group(4).replace(",", "")),
+                ))
+                prev_nonempty = line
+                i += 1
+                continue
+
         if m and current_section:
             part_no = m.group(1)
             qty = (

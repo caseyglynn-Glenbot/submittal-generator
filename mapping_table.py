@@ -586,6 +586,12 @@ PAGE_ORDER = [
     # ----- Page 21 — Water Separator -----
     "water_separator.pdf",
 
+    # ----- VFD (description-driven): 2 static pages + annotated frame chart -----
+    "vfd_no_bypass.pdf",
+    "vfd_no_bypass_chart.pdf",
+    "vfd_bypass.pdf",
+    "vfd_bypass_chart.pdf",
+
     # ----- Page 22 — Defender Tool Kit (part-driven, aggregate qty) -----
     "tool_kit.pdf",
 
@@ -622,6 +628,63 @@ PAGE_ORDER = [
     "grating_perpendicular_0812.pdf",
     "grating_perpendicular_1420.pdf",
 ]
+
+
+# ---------------------------------------------------------------------------
+# VFD pages (greendrive) — description-driven. Each variant is a 2-page
+# static intro (merged verbatim) + a 1-page frame chart that takes the
+# yellow callout and a red box on the matched frame row. callout_xy is the
+# top-left of each sheet's baked placeholder.
+# ---------------------------------------------------------------------------
+VFD_PAGES = {
+    "no_bypass": {
+        "static": "vfd_no_bypass.pdf",
+        "chart": "vfd_no_bypass_chart.pdf",
+        "callout_xy": (175, 554),
+    },
+    "bypass": {
+        "static": "vfd_bypass.pdf",
+        "chart": "vfd_bypass_chart.pdf",
+        "callout_xy": (161, 562),
+    },
+}
+
+# Frame Sizing Chart geometry (identical on both variants' chart page):
+# full-row red boxes located by measured row tops; table spans x 30-582.
+VFD_FRAME_ROWS = {
+    "A5": {"x": 30, "y": 644.6, "width": 552, "height": 14},
+    "B1": {"x": 30, "y": 656.6, "width": 552, "height": 14},
+    "B2": {"x": 30, "y": 668.6, "width": 552, "height": 14},
+    "C1": {"x": 30, "y": 680.8, "width": 552, "height": 14},
+    "C2": {"x": 30, "y": 692.8, "width": 552, "height": 14},
+}
+
+# HP -> frame row per voltage column (200-240V / 380-480V / 575V).
+_VFD_HP_TO_FRAME = {
+    "200": {"A5": {0.5, 0.75, 1, 1.5, 2, 3, 5},
+            "B1": {7.5, 10, 15}, "B2": {20},
+            "C1": {25, 30, 40}, "C2": {50, 60}},
+    "480": {"A5": {0.5, 0.75, 1, 1.5, 2, 3, 5, 7.5, 10},
+            "B1": {15, 20, 25}, "B2": {30, 40},
+            "C1": {50, 60, 75}, "C2": {100, 125}},
+    "575": {"A5": {1, 1.5, 2, 3, 5, 7.5, 10},
+            "B1": {15, 20, 25}, "B2": {30, 40},
+            "C1": {50, 60, 75}, "C2": {100, 125}},
+}
+
+
+def vfd_frame_row(volt: int, hp: float):
+    """Map a VFD's voltage + HP to its Frame Sizing Chart row ('A5'..'C2')."""
+    if volt <= 240:
+        col = "200"
+    elif volt <= 480:
+        col = "480"
+    else:
+        col = "575"
+    for row, hps in _VFD_HP_TO_FRAME[col].items():
+        if hp in hps:
+            return row
+    return None
 
 
 # ---------------------------------------------------------------------------

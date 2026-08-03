@@ -19,12 +19,13 @@ import shutil
 import subprocess
 import fitz
 from pathlib import Path
-from quote_parser import parse_quote, accessory_size, accessory_material
+from quote_parser import parse_quote, accessory_size, accessory_material, vfd_specs
 from annotation_engine import annotate_template, AnnotationSpec, YellowCallout, RedBox
 from table_detector import detect_table_rows
 from mapping_table import (
     PART_MAPPING, STATIC_PAGES, VALVE_KIT_PAGES, PAGE_ORDER,
     SCHEMATIC_BY_FAMILY, ACCESSORY_PAGES, GRATING_PARALLEL_STRAIGHT,
+    VFD_PAGES, VFD_FRAME_ROWS, vfd_frame_row,
     parse_valve_kit_sizes, inch_to_dn, get_pool_label, filter_size_key,
 )
 import parts_catalog
@@ -824,6 +825,46 @@ def generate_submittal(
         produced_pages[page] = out_path
         flag = " [VERIFY wording]" if recipe.get("verify") else ""
         print(f"  {page} ← {len(job['callout_lines'])} callout line(s), {len(fixed)} red box(es){flag}")
+
+    # ----- 4f: VFD pages (description-driven). Each variant (no-bypass /
+    #           bypass) emits its 2-page static intro verbatim plus the frame
+    #           chart page with a stacked callout (one line per VFD spec) and
+    #           a red box on each matched Frame Sizing Chart row.
+    # -----
+    print("\n--- VFD pages ---")
+    vfd_jobs = {}
+    for li in quote.line_items:
+        spec = vfd_specs(li.description)
+        if not spec:
+            continue
+        variant = "bypass" if spec["bypass"] else "no_bypass"
+        job = vfd_jobs.setdefault(variant, {"lines": [], "rows": []})
+        pn = f"{li.part_number} " if li.part_number else ""
+        line = (f"({li.quantity}) {pn}VFD {spec['volt']}V "
+                f"{spec['ph']}ph {spec['hp_str']} HP REQ'D")
+        if line not in job["lines"]:
+            job["lines"].append(line)
+        row = vfd_frame_row(spec["volt"], spec["hp"])
+        if row is None:
+            print(f"  WARNING: no frame row for VFD {spec['volt']}V {spec['hp_str']} HP; callout only")
+        elif row not in job["rows"]:
+            job["rows"].append(row)
+    for variant, job in vfd_jobs.items():
+        cfg = VFD_PAGES[variant]
+        static_path = TEMPLATE_DIR / cfg["static"]
+        chart_path = TEMPLATE_DIR / cfg["chart"]
+        if not static_path.exists() or not chart_path.exists():
+            print(f"  MISSING (skipped): {cfg['static']} / {cfg['chart']}")
+            continue
+        cx, cy = cfg["callout_xy"]
+        callouts = [YellowCallout(x=cx, y=cy, lines=job["lines"])]
+        fixed = [RedBox(**VFD_FRAME_ROWS[r]) for r in job["rows"]]
+        out_path = OUTPUT_DIR / f"vfd_{cfg['chart']}"
+        annotate_page(chart_path, callouts, [], out_path, fixed_red_boxes=fixed)
+        produced_pages[cfg["static"]] = static_path
+        produced_pages[cfg["chart"]] = out_path
+        print(f"  {cfg['static']} + {cfg['chart']} ← {len(job['lines'])} callout line(s), "
+              f"{len(fixed)} frame row box(es)")
 
     # ----- 4e: Parallel straight grating (grouped, band-sized; callout-only).
     pg = parallel_straight_grating(quote.line_items)
