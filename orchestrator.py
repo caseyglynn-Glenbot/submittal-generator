@@ -517,7 +517,12 @@ def generate_submittal(
         except KeyError as e:
             print(f"  SKIP: {e}")
             continue
-        out_path = OUTPUT_DIR / f"datasheet_{li.section.replace(' ', '_')}.pdf"
+        # Filename carries section AND model so two filters can never collide
+        # on one output file (the Ulster bug: both filters in section "Items"
+        # wrote datasheet_Items.pdf — second overwrote first, merged twice).
+        safe_ref = re.sub(r"[^A-Za-z0-9-]", "_", li.reference or "filter")
+        out_path = (OUTPUT_DIR /
+                    f"datasheet_{li.section.replace(' ', '_')}_{safe_ref}.pdf")
         fill_datasheet(
             str(template_path), str(out_path),
             project_name=f"{_project_name_for_cover(effective_project_name)} Renovation",
@@ -606,6 +611,11 @@ def generate_submittal(
         if "DEFENDER VALVE KIT" in li.description.upper():
             sizes = parse_valve_kit_sizes(li.description)
             if sizes:
+                prior = kits_by_section.get(li.section)
+                if prior is not None and prior != sizes:
+                    print(f"  WARNING: multiple valve kits in section "
+                          f"{li.section!r} ({prior} -> {sizes}); the parser "
+                          f"should have split these into per-system sections")
                 kits_by_section[li.section] = sizes
 
     for template_name, recipe in VALVE_KIT_PAGES.items():
@@ -703,6 +713,18 @@ def generate_submittal(
             job["aggregate_total"] += li.quantity
             continue
 
+        # aggregate_key: sum quantities per distinct key value (e.g. pail
+        # size) across ALL sections, so a 25# pail quoted once per system
+        # shows the true total instead of dedup-collapsing to (1).
+        agg_key = m.get("aggregate_key")
+        if agg_key:
+            key_val = m.get(agg_key, "")
+            job.setdefault("agg_by_key", {})
+            job["agg_by_key"][key_val] = (
+                job["agg_by_key"].get(key_val, 0) + li.quantity
+            )
+            continue
+
         ctx = {"qty": li.quantity, "pool_label": get_pool_label(li.section),
                "pail_label": m.get("pail_label", "")}
         job["pool_ctx"][get_pool_label(li.section)] = ctx
@@ -721,6 +743,16 @@ def generate_submittal(
             job["pool_ctx"][""] = agg_ctx
             if job["callout_pattern"]:
                 job["callout_lines"].append(job["callout_pattern"].format(**agg_ctx))
+        # aggregate_key totals: one callout line per key value (sorted so
+        # 25# lists before 55#), summed across the whole quote.
+        for key_val in sorted(job.get("agg_by_key", {})):
+            total = job["agg_by_key"][key_val]
+            ctx = {"qty": total, "pail_label": key_val, "pool_label": ""}
+            if job["callout_pattern"]:
+                line = job["callout_pattern"].format(**ctx)
+                if line not in job["callout_lines"]:
+                    job["callout_lines"].append(line)
+            job["pool_ctx"].setdefault("", ctx)
 
     for template, job in page_jobs.items():
         template_path = TEMPLATE_DIR / template

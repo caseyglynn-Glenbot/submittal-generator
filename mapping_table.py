@@ -154,11 +154,17 @@ PART_MAPPING = {
     # Both pail sizes land on the same cut sheet; {pail_label} carries the
     # per-part size so mixed 25#/55# quotes stack correct lines in one box.
     # Callout xy sits on the sheet's yellow placeholder (template strips it).
+    # aggregate_key="pail_label": quantities are summed PER PAIL SIZE across
+    # the whole quote (a two-system quote with a 25# pail in each system shows
+    # "(2) 25# PAIL(S) REQ'D", not a deduped "(1)"). Both the legacy 132xx and
+    # the SAP 1000-58xx part numbers appear on real quotes (Ulster uses the
+    # SAP form), so all four are mapped.
     "13250": {
         "template": "filter_cleaner.pdf",
         "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
         "callout_xy": (383, 394),
         "pail_label": "25#",
+        "aggregate_key": "pail_label",
         "red_box_rows": [],
     },
     "13251": {
@@ -166,6 +172,23 @@ PART_MAPPING = {
         "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
         "callout_xy": (383, 394),
         "pail_label": "55#",
+        "aggregate_key": "pail_label",
+        "red_box_rows": [],
+    },
+    "1000-5865": {   # CHEMICAL, CLEAN EXPRESS 25LB (SAP part number)
+        "template": "filter_cleaner.pdf",
+        "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
+        "callout_xy": (383, 394),
+        "pail_label": "25#",
+        "aggregate_key": "pail_label",
+        "red_box_rows": [],
+    },
+    "1000-5866": {   # CHEMICAL, CLEAN EXPRESS 55LB (SAP part number)
+        "template": "filter_cleaner.pdf",
+        "callout_template": "({qty}) {pail_label} PAIL(S) REQ'D",
+        "callout_xy": (383, 394),
+        "pail_label": "55#",
+        "aggregate_key": "pail_label",
         "red_box_rows": [],
     },
 

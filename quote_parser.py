@@ -76,6 +76,19 @@ _ITEM_RE_OCR = re.compile(
 # Filter model embedded in a "FILTER DEFENDER SP-33-48-732" description.
 _SP_MODEL_RE = re.compile(r'(SP-\d+-\d+-\d+(?:-[A-Z])?)', re.I)
 
+# "Filter System - Defender" parent line. On single-section quotes (Ulster
+# County layout) each occurrence of this part number marks the start of a new
+# complete filter system inside the SAME quote section, and the system's name
+# lives in the Alternative Description line that follows (e.g. "SWIMMING POOL
+# (1) Existing SP49 Flowrate: 2000 GPM ..." / "SPLASH PAD Flowrate: 400 ...").
+_SYSTEM_PARENT_PART = "1001-9810"
+# Leading run of fully-UPPERCASE words in that alt-description = the system
+# label. Word-by-word matching (each word >= 2 uppercase chars) stops cleanly
+# before mixed-case tails ("Flowrate"), digits ("2000"), or '(' — so
+# "SWIMMING POOL (1) Existing SP49 ..." -> "SWIMMING POOL" and
+# "SPLASH PAD Flowrate: 400 GPM ..."    -> "SPLASH PAD".
+_SYSTEM_LABEL_RE = re.compile(r'^((?:[A-Z][A-Z&/\-]+)(?:\s+[A-Z][A-Z&/\-]+)*)')
+
 
 def _is_price_fragment(text: str) -> bool:
     """True for stray numeric/price fragments left by a wrapped price cell.
@@ -201,8 +214,9 @@ def _extract_project_name(header_text: str) -> str:
 # Repeated page furniture that OCR scatters into the line stream; never a
 # legitimate line-item description.
 _FURNITURE_RE = re.compile(
-    r"^(Page \d+|Item Part No|Part No|Description|Quote Number|Account ID|"
-    r".*Subtotal.*|Total\b.*|Currency\b.*)$", re.I,
+    r"^(Page \d+\b.*|Item Part No\b.*|Part No\b.*|Description\b.*|"
+    r"Quote Number\b.*|Account ID\b.*|"
+    r".*Net Price.*|.*Subtotal.*|Total\b.*|Currency\b.*)$", re.I,
 )
 
 
@@ -210,9 +224,69 @@ def _is_furniture(text: str) -> bool:
     return bool(_FURNITURE_RE.match((text or "").strip()))
 
 
+def _system_label_after(all_lines, start_idx, lookahead=8) -> str:
+    """Extract the system label that follows a 1001-9810 parent row.
+
+    Scans forward for the 'Alternative Description:' marker, then takes the
+    leading uppercase-word run of the first non-empty, non-furniture line
+    after it. Returns '' if no label is recoverable.
+    """
+    saw_alt = False
+    for j in range(start_idx + 1, min(start_idx + 1 + lookahead, len(all_lines))):
+        candidate = all_lines[j].strip()
+        if not candidate:
+            continue
+        if not saw_alt:
+            if "ALTERNATIVE DESCRIPTION" in candidate.upper():
+                saw_alt = True
+            continue
+        if _is_furniture(candidate) or _is_price_fragment(candidate):
+            continue
+        m = _SYSTEM_LABEL_RE.match(candidate)
+        return m.group(1).strip() if m else ""
+    return ""
+
+
+def _split_filter_systems(quote: Quote, markers) -> None:
+    """Relabel sections when ONE quote section contains MULTIPLE
+    'Filter System - Defender' (1001-9810) parent lines.
+
+    Quotes like Ulster County place two complete filter systems inside a
+    single 'Items' section, separated only by the 1001-9810 parent rows.
+    Everything downstream (valve-kit pages, datasheet template resolution,
+    filter-family gating, pool-labeled callouts) keys on LineItem.section, so
+    without this split the second system's valve kit overwrites the first's,
+    both datasheets collide on one output filename, and the package comes out
+    as a single mangled system.
+
+    markers: list of (line_items index, label) for each parent row, in quote
+    order. Sections with fewer than two markers are left untouched, so named
+    multi-pool layouts (Lap Pool / Training pool) and single-system quotes
+    parse byte-identically to the pre-patch parser.
+    """
+    by_section = {}
+    for idx, label in markers:
+        by_section.setdefault(quote.line_items[idx].section, []).append((idx, label))
+
+    for section, marks in by_section.items():
+        if len(marks) < 2:
+            continue
+        bounds = [idx for idx, _ in marks] + [len(quote.line_items)]
+        used = {}
+        for k, (start, label) in enumerate(marks):
+            name = (label or "").strip() or f"SYSTEM {k + 1}"
+            used[name] = used.get(name, 0) + 1
+            if used[name] > 1:
+                name = f"{name} {used[name]}"  # two same-labeled systems
+            for li in quote.line_items[start:bounds[k + 1]]:
+                if li.section == section:  # don't touch interleaved real sections
+                    li.section = name
+
+
 def parse_quote(pdf_path: str) -> Quote:
     quote = Quote()
     current_section: Optional[str] = None
+    system_markers = []  # (line_items index, label) per 1001-9810 parent row
 
     # Text layer first; OCR fallback only if the document is effectively empty.
     pages_text, ocr_used = _page_texts(pdf_path)
@@ -293,8 +367,11 @@ def parse_quote(pdf_path: str) -> Quote:
             # Description: next non-empty line that isn't a unit indicator, a
             # "Reference" line, a stray wrapped-price fragment, or page furniture
             # (page numbers / repeated headers / totals) scattered by OCR.
+            # Window is 10 lines (was 5): a row at a page break has the next
+            # page's full header block (Quote Number / Account ID / Page N /
+            # column headers) between the row and its wrapped description.
             description = ""
-            for j in range(i + 1, min(i + 6, len(all_lines))):
+            for j in range(i + 1, min(i + 11, len(all_lines))):
                 candidate = all_lines[j].strip()
                 if not candidate:
                     continue
@@ -334,8 +411,20 @@ def parse_quote(pdf_path: str) -> Quote:
                 unit_price=unit_price,
             ))
 
+            # 1001-9810 parent row = start of a new filter system. Record the
+            # marker (with its Alternative-Description label) so multi-system
+            # single-section quotes can be split after the scan.
+            if part_no == _SYSTEM_PARENT_PART:
+                system_markers.append(
+                    (len(quote.line_items) - 1, _system_label_after(all_lines, i))
+                )
+
         prev_nonempty = line
         i += 1
+
+    # Split any section holding multiple filter systems into per-system
+    # sections (no-op for single-system and named multi-pool quotes).
+    _split_filter_systems(quote, system_markers)
 
     # Fail loud rather than emit a blank submittal: if even OCR recovered no
     # line items, the caller gets a clear error instead of a cover-only PDF.
