@@ -195,6 +195,7 @@ PART_MAPPING = {
     # ----- Parts that don't produce their own page -----
     "1000-5852": {"skip": True},   # perlite — always-included via STATIC_PAGES; bag qty annotated in orchestrator 4a
     "1000-8397": {"skip": True},   # spare strainer basket — shown with strainer
+    "1000-8399": {"skip": True},   # basket strainer 10-12 T316SS — shown with Guardian strainer callout
     "1001-9810": {"skip": True},   # "Filter System - Defender" parent line
 }
 
@@ -405,12 +406,15 @@ ACCESSORY_PAGES = {
         # landed off the mark). Red box located by the unique part number via
         # PDF text search, within the table's column span x[23,213] — reliable
         # on this dense table where OCR row detection failed.
-        "callout_xy": (261, 138),
+        # Callout sits in the clear gap between the table (right edge x≈213)
+        # and the reducer drawings (left edge x≈435); min box width 195 keeps
+        # the right edge at ~421.
+        "callout_xy": (226, 248),
         "table_x": (23, 213),
     },
     "eccentric_reducer.pdf": {              # = reducer_fg.pdf (FG eccentric)
         "callout_template": "({qty}) {size} REQ'D",
-        "callout_xy": (261, 138),
+        "callout_xy": (226, 248),           # same sheet layout — same clear gap
         "red_boxes_fixed": [{"x": 23, "y": 62, "width": 190, "height": 21}],
     },
     "reducer_ss.pdf": {
@@ -421,7 +425,7 @@ ACCESSORY_PAGES = {
     # ----- Precoat tees -----
     "precoat_tee.pdf": {                    # existing FG page
         "callout_template": "({qty}) {size} REQ'D",
-        "callout_xy": (520, 440),
+        "callout_xy": (373, 273),   # top-left of baked placeholder (R 7/21/14 sheet)
         "row_from_size": True,
     },
     "precoat_tee_ss.pdf": {
