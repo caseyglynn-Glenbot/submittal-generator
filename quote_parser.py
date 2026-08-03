@@ -456,6 +456,21 @@ def parse_quote(pdf_path: str) -> Quote:
                 if sp:
                     reference = sp.group(1).upper()
 
+            # Wafer UV lines carry their enclosure rating only in the
+            # Alternative Description block (e.g. "-Nema12 Control Panel
+            # Rating"), which isn't part of the captured description. Scan
+            # forward until the next item row and append a NEMA12/NEMA4X
+            # marker so downstream routing can pick the right cut sheet.
+            if re.search(r"\bUV\b.*\bWF-\d+-\d+", description.upper()):
+                for j in range(i + 1, min(i + 30, len(all_lines))):
+                    nxt = all_lines[j].strip()
+                    if item_re.match(nxt):
+                        break
+                    mn = re.search(r"NEMA\s*(12|4X)", nxt.upper())
+                    if mn:
+                        description += f" NEMA{mn.group(1)}"
+                        break
+
             quote.line_items.append(LineItem(
                 section=current_section,
                 part_number=part_no,

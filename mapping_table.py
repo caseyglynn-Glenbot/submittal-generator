@@ -444,6 +444,55 @@ ACCESSORY_PAGES = {
         "callout_xy": (194, 399),           # top-left of baked placeholder
         "table_x": (27, 585),
     },
+
+    # ----- Surge tank accessories -----
+    "anti_vortex_plate.pdf": {              # PVC + SS plates (R 11/29/17)
+        "callout_template": "({qty}) {size}\" {mat} REQ'D",
+        "callout_xy": (35, 270),            # top-left of baked placeholder
+        "size_re": r"PLATE\s+(\d+)",        # 'ANTI-VORTEX PLATE 8" W/HDW PVC' -> 8
+        "table_x": (22, 389),
+    },
+    "surge_ladder.pdf": {                   # SS access ladders (R 5/12/16)
+        "callout_template": "({qty}) {size} RUNG REQ'D",
+        "callout_xy": (411, 506),
+        "size_re": r"(\d+)\s*RUNG",         # 'LADDER SURGE 8 RUNG ...' -> 8
+        "table_x": (345, 587),
+    },
+    # Diversion valve sheets have image-only tables (no text layer), so rows
+    # are fixed boxes keyed by parsed pipe size; bands measured by line scan
+    # and anchored to each sheet's baked example box (inline: 12, vert: 10).
+    "diversion_valve_inline.pdf": {         # PVC inline (R 5/6/11)
+        "callout_template": "({qty}) {size}\" DUAL FLOAT REQ'D",
+        "callout_xy": (185, 499),           # top-left of baked placeholder
+        "size_re": r"(\d+)\s*PVC",          # 'IN-LINE 14PVC2 FLT' -> 14
+        "size_rows": {
+            "4":  {"x": 40, "y": 603.8, "width": 416, "height": 12.5},
+            "6":  {"x": 40, "y": 615.8, "width": 416, "height": 13.5},
+            "8":  {"x": 40, "y": 628.8, "width": 416, "height": 12.5},
+            "10": {"x": 40, "y": 640.8, "width": 416, "height": 12.0},
+            "12": {"x": 40, "y": 652.2, "width": 416, "height": 13.5},
+            "14": {"x": 40, "y": 665.2, "width": 416, "height": 14.5},
+            "16": {"x": 40, "y": 679.2, "width": 416, "height": 12.5},
+            "18": {"x": 40, "y": 691.2, "width": 416, "height": 13.0},
+            "20": {"x": 40, "y": 703.7, "width": 416, "height": 13.3},
+        },
+    },
+    "diversion_valve_vertical.pdf": {       # PVC vertical (R 5/6/11)
+        "callout_template": "({qty}) {size}\" REQ'D",
+        "callout_xy": (184, 551),           # top-left of baked placeholder
+        "size_re": r"(\d+)\s*PVC",
+        "size_rows": {
+            "4":  {"x": 114, "y": 621.8, "width": 385, "height": 12.5},
+            "6":  {"x": 114, "y": 633.8, "width": 385, "height": 13.5},
+            "8":  {"x": 114, "y": 646.8, "width": 385, "height": 11.7},
+            "10": {"x": 114, "y": 658.0, "width": 385, "height": 14.0},
+            "12": {"x": 114, "y": 671.5, "width": 385, "height": 11.8},
+            "14": {"x": 114, "y": 682.8, "width": 385, "height": 14.9},
+            "16": {"x": 114, "y": 697.2, "width": 385, "height": 12.5},
+            "18": {"x": 114, "y": 709.2, "width": 385, "height": 13.0},
+            "20": {"x": 114, "y": 721.7, "width": 385, "height": 13.3},
+        },
+    },
     "strainer_reducing.pdf": {
         "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
         "callout_xy": (196, 401),
@@ -624,6 +673,12 @@ PAGE_ORDER = [
     "eccentric_reducer.pdf",        # FG eccentric (was reducer_fg.pdf)
     "reducer_ss.pdf",               # SS concentric + eccentric
 
+    # ----- Surge tank accessories (part/description-driven) -----
+    "diversion_valve_inline.pdf",
+    "diversion_valve_vertical.pdf",
+    "anti_vortex_plate.pdf",
+    "surge_ladder.pdf",
+
     # ----- Grating (part-driven) -----
     "grating_parallel_0610.pdf",    # parallel straight (6-10")
     "grating_parallel_1114.pdf",    # parallel straight (11-14")
@@ -691,6 +746,46 @@ def vfd_frame_row(volt: int, hp: float):
         if hp in hps:
             return row
     return None
+
+
+# ---------------------------------------------------------------------------
+# Wafer UV (ETS-UV WF series) — model + enclosure-rating driven.
+# Each package = a 1-page spec sheet (annotated: "(qty) REQUIRED" over the
+# baked placeholder at the same spot on every model) + a docs file (EZ
+# Strainer / quartz basket sheets) merged VERBATIM so each model's baked
+# strainer-row red boxes are preserved. Template names:
+#   uv_wf_<model>_<rating>.pdf / uv_wf_<model>_<rating>_docs.pdf
+# rating: "n4x" (Nema4x, loaded) or "n12" (Nema12, pending cut sheets).
+# ---------------------------------------------------------------------------
+UV_WAFER_MODELS = ["115_3", "115_4", "125_6", "215_6", "215_8",
+                   "225_8", "230_10", "430_12"]
+UV_WAFER_RATINGS = ["n12", "n4x"]
+UV_WAFER_CALLOUT_XY = (264, 641)
+# Per-template overrides for sheets whose baked placeholder sits elsewhere.
+UV_WAFER_CALLOUT_XY_OVERRIDES = {
+    "uv_wf_215_8_n12.pdf": (197, 633),
+}
+UV_WAFER_CALLOUT_TEMPLATE = "({qty}) REQUIRED"
+
+
+def uv_wafer_templates(model: str, rating: str):
+    """Return (spec_page, docs_page) template names for a WF model/rating.
+
+    model is the digits form ('225-8' or '225_8'); rating 'n12' or 'n4x'.
+    Returns None for unknown models so the caller can warn.
+    """
+    m = model.replace("-", "_")
+    if m not in UV_WAFER_MODELS:
+        return None
+    return (f"uv_wf_{m}_{rating}.pdf", f"uv_wf_{m}_{rating}_docs.pdf")
+
+
+# Append UV pages to PAGE_ORDER programmatically (32 names would drown the
+# hand-maintained list above).
+for _m in UV_WAFER_MODELS:
+    for _r in UV_WAFER_RATINGS:
+        PAGE_ORDER.append(f"uv_wf_{_m}_{_r}.pdf")
+        PAGE_ORDER.append(f"uv_wf_{_m}_{_r}_docs.pdf")
 
 
 # ---------------------------------------------------------------------------

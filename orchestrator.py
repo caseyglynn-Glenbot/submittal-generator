@@ -26,6 +26,7 @@ from mapping_table import (
     PART_MAPPING, STATIC_PAGES, VALVE_KIT_PAGES, PAGE_ORDER,
     SCHEMATIC_BY_FAMILY, ACCESSORY_PAGES, GRATING_PARALLEL_STRAIGHT,
     VFD_PAGES, VFD_FRAME_ROWS, vfd_frame_row,
+    UV_WAFER_CALLOUT_XY, UV_WAFER_CALLOUT_XY_OVERRIDES, UV_WAFER_CALLOUT_TEMPLATE, uv_wafer_templates,
     parse_valve_kit_sizes, inch_to_dn, get_pool_label, filter_size_key,
 )
 import parts_catalog
@@ -282,6 +283,16 @@ def resolve_accessory_page(li):
         size = accessory_size(d) or ""
         return ("guardian_strainer_reducing.pdf" if "X" in size.upper()
                 else "guardian_strainer_straight.pdf")
+
+    # Surge tank accessories not enumerated (or only partly enumerated) in
+    # the catalog — routed by description.
+    if "VALVE DIVERSION" in d or "DIVERSION VALVE" in d:
+        return ("diversion_valve_vertical.pdf" if "VERT" in d
+                else "diversion_valve_inline.pdf")
+    if "ANTI-VORTEX" in d or "ANTI VORTEX" in d:
+        return "anti_vortex_plate.pdf"
+    if "LADDER" in d and "SURGE" in d:
+        return "surge_ladder.pdf"
 
     return None
 
@@ -789,15 +800,23 @@ def generate_submittal(
         if recipe is None:
             print(f"  WARNING: {li.part_number} routed to {page} but no ACCESSORY_PAGES recipe")
             continue
-        size = accessory_size(li.description)
+        if recipe.get("size_re"):
+            sm = re.search(recipe["size_re"], (li.description or "").upper())
+            size = sm.group(1) if sm else None
+        else:
+            size = accessory_size(li.description)
         if not size:
             print(f"  WARNING: no size parsed for {li.part_number} {li.description!r}; skipping callout")
             continue
         job = acc_jobs.setdefault(page, {"recipe": recipe, "callout_lines": [],
-                                         "row_terms": [], "part_numbers": []})
-        line = recipe["callout_template"].format(qty=li.quantity, size=size)
+                                         "row_terms": [], "part_numbers": [],
+                                         "sizes": []})
+        line = recipe["callout_template"].format(
+            qty=li.quantity, size=size, mat=accessory_material(li.description))
         if line not in job["callout_lines"]:
             job["callout_lines"].append(line)
+        if size not in job["sizes"]:
+            job["sizes"].append(size)
         if li.part_number not in job["part_numbers"]:
             job["part_numbers"].append(li.part_number)
         # Red-box strategy per recipe: "table_x" => locate by part# text search
@@ -824,6 +843,14 @@ def generate_submittal(
                     fixed.append(rb)
                 else:
                     print(f"  WARNING: part# {pn} not found on {page}; no red box drawn")
+        srows = recipe.get("size_rows")
+        if srows:
+            for s in job["sizes"]:
+                band = srows.get(str(s))
+                if band:
+                    fixed.append(RedBox(**band))
+                else:
+                    print(f"  WARNING: no size row for {s}\" on {page}; no red box drawn")
         annotate_page(template_path, callouts, job["row_terms"], out_path,
                       fixed_red_boxes=fixed)
         produced_pages[page] = out_path
@@ -869,6 +896,47 @@ def generate_submittal(
         produced_pages[cfg["chart"]] = out_path
         print(f"  {cfg['static']} + {cfg['chart']} ← {len(job['lines'])} callout line(s), "
               f"{len(fixed)} frame row box(es)")
+
+    # ----- 4g: Wafer UV pages (model + rating driven). Spec page annotated
+    #           with "(qty) REQUIRED"; docs pages merged verbatim so each
+    #           model's baked strainer-row red boxes are preserved.
+    # -----
+    print("\n--- Wafer UV pages ---")
+    uv_jobs = {}
+    for li in quote.line_items:
+        d = (li.description or "").upper()
+        mu = re.search(r"\bUV\b.*?\bWF-(\d+-\d+)", d) or re.search(r"\bWF-(\d+-\d+).*?\bUV\b", d)
+        if not mu:
+            continue
+        model = mu.group(1)
+        if "NEMA4X" in d.replace(" ", ""):
+            rating = "n4x"
+        elif "NEMA12" in d.replace(" ", ""):
+            rating = "n12"
+        else:
+            rating = "n4x"
+            print(f"  WARNING: no NEMA rating found for UV WF-{model}; defaulting to Nema4x")
+        key = (model, rating)
+        uv_jobs[key] = uv_jobs.get(key, 0) + li.quantity
+    for (model, rating), qty in uv_jobs.items():
+        pair = uv_wafer_templates(model, rating)
+        if pair is None:
+            print(f"  WARNING: unknown wafer UV model WF-{model}; no page emitted")
+            continue
+        spec_name, docs_name = pair
+        spec_path = TEMPLATE_DIR / spec_name
+        docs_path = TEMPLATE_DIR / docs_name
+        if not spec_path.exists() or not docs_path.exists():
+            print(f"  MISSING (skipped): {spec_name} / {docs_name}")
+            continue
+        cx, cy = UV_WAFER_CALLOUT_XY_OVERRIDES.get(spec_name, UV_WAFER_CALLOUT_XY)
+        callouts = [YellowCallout(x=cx, y=cy,
+                                  lines=[UV_WAFER_CALLOUT_TEMPLATE.format(qty=qty)])]
+        out_path = OUTPUT_DIR / f"uv_{spec_name}"
+        annotate_page(spec_path, callouts, [], out_path)
+        produced_pages[spec_name] = out_path
+        produced_pages[docs_name] = docs_path
+        print(f"  {spec_name} + docs ← ({qty}) REQUIRED")
 
     # ----- 4e: Parallel straight grating (grouped, band-sized; callout-only).
     pg = parallel_straight_grating(quote.line_items)
