@@ -12,6 +12,38 @@ S.S. basket part numbers are intentionally excluded (they ship with the strainer
 """
 
 PART_TO_PAGE = {
+
+    # ---- guardian_strainer_straight.pdf / _reducing.pdf (FG Guardian) ----
+    "1000-6267": "guardian_strainer_straight.pdf",
+    "1000-6268": "guardian_strainer_straight.pdf",
+    "1000-6269": "guardian_strainer_straight.pdf",
+    "1000-6270": "guardian_strainer_straight.pdf",
+    "1000-6271": "guardian_strainer_straight.pdf",
+    "1000-6272": "guardian_strainer_straight.pdf",
+    "1000-6273": "guardian_strainer_straight.pdf",
+    "1000-6274": "guardian_strainer_straight.pdf",
+    "1000-6406": "guardian_strainer_reducing.pdf",
+    "1000-6408": "guardian_strainer_reducing.pdf",
+    "1000-6409": "guardian_strainer_reducing.pdf",
+    "1000-6410": "guardian_strainer_reducing.pdf",
+    "1000-6411": "guardian_strainer_reducing.pdf",
+    "1000-6412": "guardian_strainer_reducing.pdf",
+    "1000-6413": "guardian_strainer_reducing.pdf",
+    "1000-6414": "guardian_strainer_reducing.pdf",
+    "1000-6415": "guardian_strainer_reducing.pdf",
+    "1000-6416": "guardian_strainer_reducing.pdf",
+    "1000-6417": "guardian_strainer_reducing.pdf",
+    "1000-6419": "guardian_strainer_reducing.pdf",
+    "1000-6420": "guardian_strainer_reducing.pdf",
+    "1000-6421": "guardian_strainer_reducing.pdf",
+    "1000-6422": "guardian_strainer_reducing.pdf",
+    "1000-6423": "guardian_strainer_reducing.pdf",
+    "1000-6424": "guardian_strainer_reducing.pdf",
+    "1000-6425": "guardian_strainer_reducing.pdf",
+    "1000-6426": "guardian_strainer_reducing.pdf",
+    "1000-9972": "guardian_strainer_reducing.pdf",
+    "1001-3921": "guardian_strainer_reducing.pdf",
+
     # ---- concentric_reducer.pdf  (26) ----
     "1000-6162": "concentric_reducer.pdf",
     "1000-6165": "concentric_reducer.pdf",

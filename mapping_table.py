@@ -434,10 +434,15 @@ ACCESSORY_PAGES = {
         "red_boxes_fixed": [{"x": 29, "y": 229, "width": 219, "height": 32}],
     },
     # ----- Strainers -----
-    "guardian_strainer.pdf": {              # existing FG guardian
+    "guardian_strainer_straight.pdf": {     # FG Guardian, straight (R 1/13/15)
         "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
-        "callout_xy": (365, 700),
-        "row_from_size": True,
+        "callout_xy": (216, 435),           # top-left of baked placeholder
+        "table_x": (26, 589),
+    },
+    "guardian_strainer_reducing.pdf": {     # FG Guardian, reducing (R 11/12/18)
+        "callout_template": "({qty}) {size} REQ'D W/ SPARE BASKET(S)",
+        "callout_xy": (194, 399),           # top-left of baked placeholder
+        "table_x": (27, 585),
     },
     "strainer_reducing.pdf": {
         "callout_template": "({qty}) {size} REQ'D w/ SPARE BASKET(S)",
@@ -605,7 +610,8 @@ PAGE_ORDER = [
     "perlite.pdf",
 
     # ----- Strainers (part-driven) -----
-    "guardian_strainer.pdf",        # FG guardian
+    "guardian_strainer_straight.pdf",   # FG guardian straight
+    "guardian_strainer_reducing.pdf",   # FG guardian reducing
     "strainer_reducing.pdf",        # SS reducing
     "strainer_straight.pdf",        # SS straight
 

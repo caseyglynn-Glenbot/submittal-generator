@@ -277,7 +277,11 @@ def resolve_accessory_page(li):
 
     d = (li.description or "").upper()
     if "STRAINER" in d and "GUARDIAN" in d and accessory_material(d) == "FG":
-        return "guardian_strainer.pdf"
+        # Fallback for FG Guardians whose part number isn't in the catalog:
+        # a two-dimension size (10" X 6") means the reducing sheet.
+        size = accessory_size(d) or ""
+        return ("guardian_strainer_reducing.pdf" if "X" in size.upper()
+                else "guardian_strainer_straight.pdf")
 
     return None
 
