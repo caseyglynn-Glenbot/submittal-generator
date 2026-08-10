@@ -20,6 +20,8 @@ Ordering:
     with a WARNING log so they don't get lost silently.
 """
 
+import re
+
 SECTION_TO_POOL_LABEL = {
     "Lap Pool": "LAP",
     "Training pool": "ACTIVITY",
@@ -29,6 +31,68 @@ SECTION_TO_POOL_LABEL = {
 
 def get_pool_label(section: str) -> str:
     return SECTION_TO_POOL_LABEL.get(section, section.upper())
+
+
+# ---------------------------------------------------------------------------
+# Generic-section pool lettering
+# ---------------------------------------------------------------------------
+# Multi-system quotes usually name their sections ("Lap Pool", "SWIMMING POOL",
+# "SPLASH PAD") and those names go straight onto the callouts. But the standard
+# Evoqua layout puts every line under one unnamed "Items" heading, and the
+# parser then splits it at each 1001-9810 parent row — producing two or three
+# sections with nothing to call them. Those get lettered POOL A, POOL B, POOL C
+# in quote order so the callouts on shared pages can still be told apart.
+#
+# A quote with a SINGLE unnamed section is lettered POOL A as well, so every
+# pool callout carries a pool label whether or not the quote names the system.
+# Set LABEL_LONE_GENERIC_SECTION = False to leave a lone system unlabeled
+# ("(1) 8\" REQ'D" instead of "(1) 8\" REQ'D - POOL A").
+GENERIC_SECTION_NAMES = {"", "items", "item", "equipment", "products"}
+# The parser names a split system from the uppercase run in its alternative
+# description ("SWIMMING POOL", "SPLASH PAD"); when that line carries no label
+# it falls back to "SYSTEM 1", "SYSTEM 2". Those fallbacks are the ones that
+# want lettering — the real names are left alone.
+GENERIC_SECTION_RE = re.compile(r"^\s*system\s*\d+\s*$", re.I)
+GENERIC_POOL_LETTERS = ["A", "B", "C", "D", "E", "F"]
+GENERIC_POOL_LABEL_FMT = "POOL {letter}"
+LABEL_LONE_GENERIC_SECTION = True
+
+
+def is_generic_section(section: str) -> bool:
+    """True when a section heading carries no usable pool name of its own."""
+    s = (section or "").strip()
+    return s.lower() in GENERIC_SECTION_NAMES or bool(GENERIC_SECTION_RE.match(s))
+
+
+def build_pool_labels(sections) -> dict:
+    """Map each section name to the pool label its callouts should carry.
+
+    `sections` is the ordered, de-duplicated list of section names as they
+    appear on the quote. Named sections keep their own label via
+    get_pool_label; generic ones are lettered A, B, C in that order.
+
+    Beyond the available letters, the section falls back to its own name so
+    nothing silently collides.
+    """
+    ordered = list(dict.fromkeys(sections))
+    lone_section = len(ordered) == 1
+
+    labels = {}
+    letter_at = 0
+    for section in ordered:
+        if not is_generic_section(section):
+            labels[section] = get_pool_label(section)
+            continue
+        if lone_section and not LABEL_LONE_GENERIC_SECTION:
+            labels[section] = ""
+            continue
+        if letter_at < len(GENERIC_POOL_LETTERS):
+            labels[section] = GENERIC_POOL_LABEL_FMT.format(
+                letter=GENERIC_POOL_LETTERS[letter_at])
+            letter_at += 1
+        else:
+            labels[section] = get_pool_label(section)
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +273,7 @@ PART_MAPPING = {
 #   3  = precoat valve size (and system fill, and drain)
 #   3SG = 3" sightglass
 
-import re
+# (re is imported at the top of this module)
 
 
 def parse_valve_kit_sizes(description: str):
@@ -786,6 +850,222 @@ for _m in UV_WAFER_MODELS:
     for _r in UV_WAFER_RATINGS:
         PAGE_ORDER.append(f"uv_wf_{_m}_{_r}.pdf")
         PAGE_ORDER.append(f"uv_wf_{_m}_{_r}_docs.pdf")
+
+
+# ---------------------------------------------------------------------------
+# SIGNET 2551 MAGMETER (part-number driven, size-driven boxes)
+# ---------------------------------------------------------------------------
+# Two variants ship, distinguished by the sensor output and therefore by a
+# different ordering page:
+#
+#   FIELD MOUNT  = frequency / digital (S3L) output, paired with a Signet 9900
+#                  field-mount transmitter. Carries the 9900 pages.
+#   FOR VFD      = 4 to 20 mA output wired straight to the drive. No transmitter
+#                  pages (the drive is the readout).
+#
+# Everything else (data sheet, dimensions, saddles, fittings, K-factors) is
+# common to both, so those templates are shared.
+#
+# The source submittals arrived pre-annotated for ONE job. Those markups were
+# stripped when the templates were split (split_magmeter_templates.py); the
+# boxes below are rebuilt per quote from the size in the line description, so
+# a 6" magmeter boxes the 5-8 in. body and a 12" boxes the 10-36 in. one.
+#
+# NOTE on the field-mount ordering page: the released file boxed 3-2551-P0-11
+# (½ to 4 in.) while its own dimensions page boxed the 5-8 in. row — the two
+# disagreed. Treated here as stale markup: BOTH are now driven off the quoted
+# size, so they can no longer contradict each other.
+
+MAGMETER_FIELD_MOUNT_PARTS = {
+    # SAP part -> nominal pipe size, inches
+    "1002-4990": 3,
+    "1000-6132": 4,
+    "1000-6133": 6,
+    "1000-6134": 8,
+    "1000-6136": 10,
+    "1000-6137": 12,      # product_line 'Defender' in the catalog, not 'Flowmeter'
+    # Blind sensors sold without the saddle assembly (size band, not a single
+    # size — sensor body code is what matters, so map to the band's midpoint).
+    "1000-6127": 4,       # 0.5"-4"  field mount -> -X0 body
+    "1000-6129": 10,      # 10"-12"  field mount -> -X2 body
+}
+
+MAGMETER_VFD_PARTS = {
+    "1000-6121": 3,
+    "1000-6122": 4,
+    "1000-6123": 6,
+    "1000-6124": 8,
+    "1000-6125": 10,
+    "1000-6126": 12,
+    "1000-6107": 4,       # 0.5"-4"  blind for VFD -> -X0 body
+    "1000-6108": 6,       # 5"-8"    blind for VFD -> -X1 body
+    "1000-6109": 10,      # 10"-12"  blind for VFD -> -X2 body
+}
+
+
+def magmeter_variant(part_number: str, description: str = ""):
+    """Return ('field_mount'|'vfd', size_inches) for a magmeter line, else None.
+
+    Part number wins. Description is the fallback for a magmeter part that
+    isn't catalogued yet, e.g. 'MAGMETER 6" FIELD MOUNT W/SENSOR&SADDLE'.
+    """
+    pn = (part_number or "").strip()
+    if pn in MAGMETER_FIELD_MOUNT_PARTS:
+        return "field_mount", MAGMETER_FIELD_MOUNT_PARTS[pn]
+    if pn in MAGMETER_VFD_PARTS:
+        return "vfd", MAGMETER_VFD_PARTS[pn]
+
+    d = (description or "").upper()
+    if "MAGMETER" not in d:
+        return None
+    m = re.search(r'(\d+(?:\.\d+)?)\s*"', d)
+    if not m:
+        return None
+    size = float(m.group(1))
+    size = int(size) if size == int(size) else size
+    variant = "vfd" if "VFD" in d else "field_mount"
+    return variant, size
+
+
+# Sensor body code by pipe size: -X0 (½-4 in.), -X1 (5-8 in.), -X2 (10-36 in.).
+# Drives BOTH the dimensions-table row and the ordering-table row.
+MAGMETER_BODY_BANDS = [
+    (0.5, 4, "0", {"x": 75.6, "y": 166.0, "width": 160.0, "height": 13.0}),
+    (5, 8, "1", {"x": 75.6, "y": 179.2, "width": 160.0, "height": 13.1}),
+    (10, 36, "2", {"x": 75.6, "y": 192.4, "width": 160.0, "height": 13.1}),
+]
+
+
+def magmeter_body_code(size_inches: float):
+    """Return (body_digit, dimensions_row_box) for a pipe size, or (None, None)."""
+    for lo, hi, code, box in MAGMETER_BODY_BANDS:
+        if lo <= size_inches <= hi:
+            return code, box
+    return None, None
+
+
+# PVC-U clamp-on saddles SCH 80 (PV8S0xx) — the default saddle per Casey.
+# The catalog carries a PVC and an iron saddle for most sizes; the NB magmeter
+# assemblies quote the PVC one (e.g. 1000-6489 'SADDLE, FLM SIGNET 6 PVC SCH80').
+# Rows measured off the sheet; x span matches the table width used by the
+# original markup (159.7 -> 537.9).
+MAGMETER_SADDLE_ROWS = {
+    "2":   {"x": 159.7, "y": 364.2, "width": 378.2, "height": 13.5},
+    "2.5": {"x": 159.7, "y": 378.2, "width": 378.2, "height": 13.5},
+    "3":   {"x": 159.7, "y": 391.6, "width": 378.2, "height": 13.5},
+    "4":   {"x": 159.7, "y": 405.5, "width": 378.2, "height": 13.5},
+    "6":   {"x": 159.7, "y": 419.4, "width": 378.2, "height": 13.5},
+    "8":   {"x": 159.7, "y": 433.3, "width": 378.2, "height": 13.5},
+}
+
+# The 4-20 mA ordering page is an image-only scan with no table text layer, so
+# its rows are pinned per model code (measured once). The field-mount ordering
+# page HAS a text layer, so its row is found by searching for the model code.
+MAGMETER_VFD_ORDER_ROWS = {
+    "0": {"x": 184.4, "y": 165.0, "width": 282.2, "height": 14.0},   # 3-2551-P0-12
+    "1": {"x": 184.4, "y": 325.0, "width": 282.2, "height": 14.0},   # 3-2551-P1-12
+    "2": {"x": 184.4, "y": 487.8, "width": 282.2, "height": 14.0},   # 3-2551-P2-12
+}
+
+MAGMETER_PAGES = {
+    "field_mount": [
+        {"template": "magmeter_intro.pdf", "verbatim": True},
+        {"template": "magmeter_dimensions.pdf", "box": "body_band"},
+        {"template": "magmeter_ordering_field_mount.pdf",
+         "callout_template": "({qty}) REQ'D",
+         "callout_xy": (255.3, 704.4),
+         "box": "order_text",
+         # Polypropylene / 316L SS body, frequency-digital output, no display —
+         # the standard NB field-mount build. Change the P if a T (PVDF/Ti) or
+         # V (PVDF/Hastelloy-C) body is ever quoted.
+         "order_code": "3-2551-P{body}-11",
+         "table_x": (174.0, 458.0)},
+        {"template": "magmeter_saddles.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         "callout_xy": (309.6, 251.4),
+         "box": "saddle_row"},
+        {"template": "magmeter_fittings.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         # Inside the PVC Saddles row, below its two bullets. The narrow width
+         # and smaller font keep the box inside the left table (which ends at
+         # x≈306) instead of spilling into the right-hand table at x≈313.
+         "callout_xy": (210.0, 166.0),
+         "callout_width": 90.0,
+         "callout_font_size": 9.0,
+         "callout_line_height": 11.0,
+         "callout_padding": 3.0,
+         # PVC Saddles row (rules at y 139.7 and 183.6). The source file boxed
+         # the PP Clamp-on row below it, which is a 10/12 in.-only fitting —
+         # wrong for every PVC saddle job.
+         "red_boxes_fixed": [{"x": 43.3, "y": 140.2, "width": 262.8, "height": 42.9}]},
+        {"template": "magmeter_kfactors.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         "callout_xy": (319.4, 346.7),
+         "box": "kfactor_row"},
+        {"template": "magmeter_9900_transmitter.pdf",
+         "callout_template": "({qty}) REQ'D",
+         "callout_xy": (122.4, 326.1),
+         "red_boxes_fixed": [{"x": 176.1, "y": 120.0, "width": 129.5, "height": 188.0}]},
+        {"template": "magmeter_9900_specs.pdf", "verbatim": True},
+    ],
+    "vfd": [
+        {"template": "magmeter_intro.pdf", "verbatim": True},
+        {"template": "magmeter_dimensions.pdf", "box": "body_band"},
+        {"template": "magmeter_ordering_vfd.pdf",
+         "callout_template": "({qty}) REQ'D",
+         "callout_xy": (235.8, 659.4),
+         "box": "order_pinned"},
+        {"template": "magmeter_saddles.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         "callout_xy": (309.6, 251.4),
+         "box": "saddle_row"},
+        {"template": "magmeter_fittings.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         "callout_xy": (210.0, 166.0),
+         "callout_width": 90.0,
+         "callout_font_size": 9.0,
+         "callout_line_height": 11.0,
+         "callout_padding": 3.0,
+         "red_boxes_fixed": [{"x": 43.3, "y": 140.2, "width": 262.8, "height": 42.9}]},
+        {"template": "magmeter_kfactors.pdf",
+         "callout_template": "({qty}) {size}\" REQ'D",
+         "callout_xy": (319.4, 346.7),
+         "box": "kfactor_row"},
+    ],
+}
+
+# K-factor rows. The sheet prints K-factors for PP true-union tees, PP clamp-on
+# saddles (10 and 12 in. ONLY), PVDF and PVC true-union tees, iron saddles,
+# and bronze/copper — but NOT for the PVC-U clamp-on saddles (PV8S0xx) this
+# generator defaults to. So for any PVC saddle under 10 in. there is no correct
+# row to box, and the page is emitted with its callout and no red box rather
+# than boxing a row that doesn't apply (which is what the source file did: it
+# boxed the PP clamp-on 10/12 rows on a 6 in. job).
+MAGMETER_KFACTOR_ROWS = {
+    # PP clamp-on saddles on SCH 80 PP pipe — the only clamp-on rows printed.
+    "10": {"x": 38.8, "y": 359.0, "width": 273.5, "height": 12.0},
+    "12": {"x": 38.8, "y": 371.0, "width": 273.5, "height": 12.0},
+}
+
+
+MAGMETER_PAGE_SEQUENCE = [
+    "magmeter_intro.pdf",
+    "magmeter_dimensions.pdf",
+    "magmeter_ordering_field_mount.pdf",
+    "magmeter_ordering_vfd.pdf",
+    "magmeter_saddles.pdf",
+    "magmeter_fittings.pdf",
+    "magmeter_kfactors.pdf",
+    "magmeter_9900_transmitter.pdf",
+    "magmeter_9900_specs.pdf",
+]
+
+# Placed with the other flow/drive equipment: after the water separator and
+# immediately before the VFD block. Move this anchor to move the whole set.
+_MAGMETER_ANCHOR = "vfd_no_bypass.pdf"
+_at = (PAGE_ORDER.index(_MAGMETER_ANCHOR)
+       if _MAGMETER_ANCHOR in PAGE_ORDER else len(PAGE_ORDER))
+PAGE_ORDER[_at:_at] = MAGMETER_PAGE_SEQUENCE
 
 
 # ---------------------------------------------------------------------------

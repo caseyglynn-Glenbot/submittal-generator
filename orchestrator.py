@@ -27,7 +27,10 @@ from mapping_table import (
     SCHEMATIC_BY_FAMILY, ACCESSORY_PAGES, GRATING_PARALLEL_STRAIGHT,
     VFD_PAGES, VFD_FRAME_ROWS, vfd_frame_row,
     UV_WAFER_CALLOUT_XY, UV_WAFER_CALLOUT_XY_OVERRIDES, UV_WAFER_CALLOUT_TEMPLATE, uv_wafer_templates,
-    parse_valve_kit_sizes, inch_to_dn, get_pool_label, filter_size_key,
+    MAGMETER_PAGES, MAGMETER_SADDLE_ROWS, MAGMETER_KFACTOR_ROWS,
+    MAGMETER_VFD_ORDER_ROWS, magmeter_variant, magmeter_body_code,
+    parse_valve_kit_sizes, inch_to_dn, get_pool_label, build_pool_labels,
+    filter_size_key,
 )
 import parts_catalog
 from datasheet_filler import (
@@ -124,11 +127,18 @@ def find_row_by_label(rows, search_terms, prefer="first"):
 
 
 def _safe_format(template: str, ctx: dict) -> str:
-    """Format a callout template, tolerating missing/extra placeholders."""
+    """Format a callout template, tolerating missing/extra placeholders.
+
+    Also tidies each line afterwards: templates are written with a trailing
+    " - {pool_label}", and on a single-system quote that label is empty, which
+    would otherwise leave "(1) 8\" REQ'D -" hanging on the page.
+    """
     try:
-        return template.format(**ctx)
+        text = template.format(**ctx)
     except (KeyError, IndexError):
         return template
+    lines = [re.sub(r"[\s\-–—:]+$", "", ln).rstrip() for ln in text.split("\n")]
+    return "\n".join(lines)
 
 
 def build_yellow_callouts(entry: dict, pool_ctx: dict, legacy_lines: list,
@@ -491,6 +501,17 @@ def generate_submittal(
     if (project_name or "").strip():
         print(f"  Project name override: {effective_project_name}")
 
+    # Pool labels for every callout on the quote. Named sections keep their own
+    # name; unnamed ones (the standard single-"Items" Evoqua layout, split at
+    # each filter-system parent row) are lettered POOL A / POOL B / POOL C in
+    # quote order. A quote with one unnamed section gets no label at all.
+    pool_labels = build_pool_labels(li.section for li in quote.line_items)
+    _named = {s: lbl for s, lbl in pool_labels.items() if lbl}
+    if _named:
+        print("  Pool labels: "
+              + ", ".join(f"{s or '(unnamed)'} → {lbl}"
+                          for s, lbl in _named.items()))
+
     pages_to_merge = []
 
     # ─────────────────────────────────────────────────────────────────────
@@ -653,17 +674,17 @@ def generate_submittal(
                 continue
 
             ctx = {
-                "pool_label": get_pool_label(section),
+                "pool_label": pool_labels.get(section, get_pool_label(section)),
                 "influent_size": sizes["influent"],
                 "effluent_size": sizes["effluent"],
                 "precoat_size": sizes["precoat"],
                 "sightglass_size": sizes["sightglass"],
                 "influent_dn": inch_to_dn(sizes["influent"]),
             }
-            pool_ctx[get_pool_label(section)] = ctx
+            pool_ctx[ctx["pool_label"]] = ctx
 
             if "callout_template" in recipe:
-                callout = recipe["callout_template"].format(**ctx)
+                callout = _safe_format(recipe["callout_template"], ctx)
                 for line in callout.split("\n"):
                     if line not in callout_lines:
                         callout_lines.append(line)
@@ -741,11 +762,13 @@ def generate_submittal(
             )
             continue
 
-        ctx = {"qty": li.quantity, "pool_label": get_pool_label(li.section),
+        ctx = {"qty": li.quantity,
+               "pool_label": pool_labels.get(li.section,
+                                             get_pool_label(li.section)),
                "pail_label": m.get("pail_label", "")}
-        job["pool_ctx"][get_pool_label(li.section)] = ctx
+        job["pool_ctx"][ctx["pool_label"]] = ctx
         if job["callout_pattern"]:
-            callout = job["callout_pattern"].format(**ctx)
+            callout = _safe_format(job["callout_pattern"], ctx)
             if callout not in job["callout_lines"]:
                 job["callout_lines"].append(callout)
         for term in m.get("red_box_rows", []):
@@ -758,14 +781,15 @@ def generate_submittal(
             agg_ctx = {"qty": job["aggregate_total"], "pool_label": ""}
             job["pool_ctx"][""] = agg_ctx
             if job["callout_pattern"]:
-                job["callout_lines"].append(job["callout_pattern"].format(**agg_ctx))
+                job["callout_lines"].append(
+                    _safe_format(job["callout_pattern"], agg_ctx))
         # aggregate_key totals: one callout line per key value (sorted so
         # 25# lists before 55#), summed across the whole quote.
         for key_val in sorted(job.get("agg_by_key", {})):
             total = job["agg_by_key"][key_val]
             ctx = {"qty": total, "pail_label": key_val, "pool_label": ""}
             if job["callout_pattern"]:
-                line = job["callout_pattern"].format(**ctx)
+                line = _safe_format(job["callout_pattern"], ctx)
                 if line not in job["callout_lines"]:
                     job["callout_lines"].append(line)
             job["pool_ctx"].setdefault("", ctx)
@@ -937,6 +961,114 @@ def generate_submittal(
         produced_pages[spec_name] = out_path
         produced_pages[docs_name] = docs_path
         print(f"  {spec_name} + docs ← ({qty}) REQUIRED")
+
+    # ----- 4h: Signet 2551 magmeter pages (part-number driven).
+    #           Two variants — field mount (frequency/digital + 9900
+    #           transmitter) and for-VFD (4-20 mA, no transmitter) — sharing
+    #           the data sheet, dimensions, saddle, fitting and K-factor pages.
+    #           Every red box is rebuilt from the quoted pipe size, so the
+    #           sensor-body row (-X0/-X1/-X2), the ordering row and the saddle
+    #           row always agree with each other and with the quote.
+    # -----
+    print("\n--- Magmeter pages ---")
+    magmeter_jobs = {}
+    for li in quote.line_items:
+        hit = magmeter_variant(li.part_number, li.description)
+        if not hit:
+            continue
+        variant, size = hit
+        job = magmeter_jobs.setdefault(variant, {"qty": 0, "sizes": []})
+        job["qty"] += li.quantity
+        if size not in job["sizes"]:
+            job["sizes"].append(size)
+
+    for variant, job in magmeter_jobs.items():
+        qty = job["qty"]
+        sizes = job["sizes"]
+        if len(sizes) > 1:
+            print(f"  WARNING: {len(sizes)} magmeter sizes on one quote {sizes}; "
+                  f"boxes follow the first ({sizes[0]}) — verify the rest by hand")
+        size = sizes[0]
+        size_str = str(int(size)) if float(size) == int(size) else str(size)
+        body, band_box = magmeter_body_code(size)
+        if body is None:
+            print(f"  WARNING: magmeter size {size_str}\" outside the 0.5-36 in. "
+                  f"range; pages emitted without size boxes")
+
+        for page_cfg in MAGMETER_PAGES[variant]:
+            name = page_cfg["template"]
+            template_path = TEMPLATE_DIR / name
+            if not template_path.exists():
+                print(f"  MISSING (skipped): {name}")
+                continue
+
+            # Verbatim pages (data sheet front matter, 9900 spec tables) carry
+            # no job-specific marks and are merged straight through.
+            if page_cfg.get("verbatim"):
+                produced_pages[name] = template_path
+                print(f"  {name} (verbatim)")
+                continue
+
+            ctx = {"qty": qty, "size": size_str}
+            callouts = []
+            if page_cfg.get("callout_template"):
+                cx, cy = page_cfg["callout_xy"]
+                box_kwargs = {}
+                for cfg_key, kw in (("callout_width", "width"),
+                                    ("callout_font_size", "font_size"),
+                                    ("callout_line_height", "line_height"),
+                                    ("callout_padding", "padding")):
+                    if cfg_key in page_cfg:
+                        box_kwargs[kw] = page_cfg[cfg_key]
+                callouts.append(YellowCallout(
+                    x=cx, y=cy,
+                    lines=[_safe_format(page_cfg["callout_template"], ctx)],
+                    **box_kwargs,
+                ))
+
+            fixed = build_fixed_red_boxes(page_cfg)
+            kind = page_cfg.get("box")
+            note = ""
+
+            if kind == "body_band" and band_box:
+                fixed.append(RedBox(**band_box))
+                note = f", -X{body} body row"
+            elif kind == "order_text" and body:
+                code = page_cfg["order_code"].format(body=body)
+                x_left, x_right = page_cfg["table_x"]
+                box = red_box_by_text(template_path, code, x_left, x_right)
+                if box:
+                    fixed.append(box)
+                    note = f", {code} row"
+                else:
+                    print(f"    WARNING: {code} not found in {name}; callout only")
+            elif kind == "order_pinned" and body:
+                row = MAGMETER_VFD_ORDER_ROWS.get(body)
+                if row:
+                    fixed.append(RedBox(**row))
+                    note = f", 3-2551-P{body}-12 row"
+            elif kind == "saddle_row":
+                row = MAGMETER_SADDLE_ROWS.get(size_str)
+                if row:
+                    fixed.append(RedBox(**row))
+                    note = f", PVC saddle {size_str}\" row"
+                else:
+                    print(f"    WARNING: no PVC clamp-on saddle row for {size_str}\" "
+                          f"(sheet prints 2-8 in. only); callout only")
+            elif kind == "kfactor_row":
+                row = MAGMETER_KFACTOR_ROWS.get(size_str)
+                if row:
+                    fixed.append(RedBox(**row))
+                    note = f", K-factor {size_str}\" row"
+                else:
+                    print(f"    NOTE: the sheet prints no K-factor row for a "
+                          f"{size_str}\" PVC clamp-on saddle; callout only")
+
+            out_path = OUTPUT_DIR / f"mag_{name}"
+            annotate_page(template_path, callouts, [], out_path,
+                          fixed_red_boxes=fixed)
+            produced_pages[name] = out_path
+            print(f"  {name} ← ({qty}) {size_str}\"{note}")
 
     # ----- 4e: Parallel straight grating (grouped, band-sized; callout-only).
     pg = parallel_straight_grating(quote.line_items)
