@@ -33,6 +33,7 @@ from mapping_table import (
     filter_size_key,
 )
 import parts_catalog
+from valve_roles import resolve_section_valve_sizes, resolve_system_fill_size
 from datasheet_filler import (
     fill_datasheet, resolve_filter_template, FILTER_FAMILIES, normalize_model,
 )
@@ -655,6 +656,42 @@ def generate_submittal(
                           f"should have split these into per-system sections")
                 kits_by_section[li.section] = sizes
 
+    # Sections that quote the four service valves individually instead of as a
+    # DEFENDER VALVE KIT line get their roles inferred, so they annotate the
+    # same pages by the same path. Before this, a kit-less Defender section
+    # produced no callouts and no boxes at all — quote 05043737 (SPLEX MD)
+    # shipped with two of its three systems' valve pages blank.
+    for section in dict.fromkeys(li.section for li in quote.line_items):
+        if section in kits_by_section:
+            continue
+        section_items = [li for li in quote.line_items if li.section == section]
+        if not any(_is_filter_line(li) for li in section_items):
+            continue  # not a Defender system, nothing to assign roles for
+        label = pool_labels.get(section, get_pool_label(section))
+        sizes, vr = resolve_section_valve_sizes(section_items, section_label=label)
+        for w in vr.warnings:
+            print(f"  NOTE: {w}")
+        if not sizes:
+            continue
+        kits_by_section[section] = sizes
+        print(f"  loose valves in section {section!r} -> "
+              f"influent {sizes['influent']}\", effluent {sizes['effluent']}\", "
+              f"precoat {sizes['precoat']}\", sightglass {sizes['sightglass']}\""
+              + (f", system fill {sizes['system_fill']}\""
+                 if sizes.get("system_fill") else ", system fill not quoted"))
+        for u in sizes["_unassigned"]:
+            print(f"  REVIEW: section {section!r} "
+                  f"{u['part_no'] or u['item_no'] or '(no part #)'} "
+                  f"({u['size']}\" {u['actuation']}) has no service role; "
+                  f"listed as {u['name']!r} - {u['description']}")
+
+    # System fill size is resolved per section once here so the warning is
+    # logged a single time rather than repeated for every page in the loop.
+    for section, sizes in kits_by_section.items():
+        _, fill_warning = resolve_system_fill_size(sizes)
+        if fill_warning:
+            print(f"  NOTE: section {section!r}: {fill_warning}")
+
     for template_name, recipe in VALVE_KIT_PAGES.items():
         template_path = TEMPLATE_DIR / template_name
         if not template_path.exists():
@@ -673,14 +710,49 @@ def generate_submittal(
             if only_for and family != only_for:
                 continue
 
+            # System fill is always 3" or 4". Kit strings carry no fill token,
+            # so the kit path has always reused the precoat size — right while
+            # the precoat is 3" or 4", wrong above that. resolve_system_fill_size
+            # returns None rather than boxing a row that cannot be the fill.
+            # Warned once per section in the pre-pass above, not once per page.
+            system_fill_size, _ = resolve_system_fill_size(sizes)
+
             ctx = {
                 "pool_label": pool_labels.get(section, get_pool_label(section)),
                 "influent_size": sizes["influent"],
                 "effluent_size": sizes["effluent"],
                 "precoat_size": sizes["precoat"],
                 "sightglass_size": sizes["sightglass"],
+                "system_fill_size": system_fill_size,
                 "influent_dn": inch_to_dn(sizes["influent"]),
+                # Loose-valve sections carry real quantities (SPLEX competition
+                # pool has two 14" check valves); kit lines are always one each.
+                "influent_qty": sizes.get("influent_qty", 1),
+                "effluent_qty": sizes.get("effluent_qty", 1),
+                "precoat_qty": sizes.get("precoat_qty", 1),
+                "sightglass_qty": sizes.get("sightglass_qty", 1),
+                "system_fill_qty": sizes.get("system_fill_qty", 1),
             }
+
+            # A page keyed on a size we could not resolve draws nothing rather
+            # than falling back to a neighbouring row.
+            if any(ctx.get(k) is None for k in recipe.get("size_keys", [])):
+                continue
+
+            # Pages whose size is INFERRED rather than quoted (the drain
+            # extension takes the precoat size) opt out of the section entirely
+            # when that size has no row on the sheet, so the run cannot print a
+            # callout asserting a size the inference does not support. Pages
+            # keyed on a real quoted size (the sightglass) keep the callout and
+            # simply skip the box.
+            if recipe.get("skip_section_if_no_row") and recipe.get("pinned_rows"):
+                rows = recipe["pinned_rows"]
+                if any(str(ctx.get(k)) not in rows
+                       for k in recipe.get("size_keys", [])):
+                    print(f"  NOTE: section {section!r}: {template_name} skipped "
+                          f"- no row for the inferred size")
+                    continue
+
             pool_ctx[ctx["pool_label"]] = ctx
 
             if "callout_template" in recipe:
@@ -698,6 +770,30 @@ def generate_submittal(
                     term = fmt.format(**ctx)
                     if term not in row_terms:
                         row_terms.append(term)
+
+            # Extra valves quoted on this Defender beyond the four service
+            # roles — a gear-operated isolation valve, say. They get their own
+            # callout line naming the valve off the quote, plus a red box on
+            # their size row when the sheet carries one, so every valve on the
+            # job is represented instead of living only in the run log.
+            if recipe.get("accepts_extra_valves"):
+                for ev in sizes.get("_unassigned", []):
+                    line = _safe_format(
+                        '({qty}) {size}" {name} - {pool_label}',
+                        {"qty": ev["qty"], "size": ev["size"],
+                         "name": ev["name"], "pool_label": ctx["pool_label"]},
+                    )
+                    if line not in callout_lines:
+                        callout_lines.append(line)
+                    for b in recipe.get("pinned_rows", {}).get(str(ev["size_in"]), []):
+                        rb = RedBox(x=b["x"], y=b["y"], width=b["width"],
+                                    height=b["height"],
+                                    line_width=b.get("line_width", 1.2))
+                        bkey = (round(rb.x, 1), round(rb.y, 1),
+                                round(rb.width, 1), round(rb.height, 1))
+                        if bkey not in _seen_boxes:
+                            _seen_boxes.add(bkey)
+                            pinned_boxes.append(rb)
 
             # Size-keyed pinned red boxes (raster pages w/o a table text layer).
             # Accumulate across sections, de-duping identical rects so two pools

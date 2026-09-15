@@ -311,7 +311,7 @@ def parse_valve_kit_sizes(description: str):
 # {effluent_size}, {precoat_size}, {sightglass_size}, {influent_dn}
 VALVE_KIT_PAGES = {
     "influent_check_valve.pdf": {
-        "callout_template": '(1) {influent_size}" REQ\'D - {pool_label}',
+        "callout_template": '({influent_qty}) {influent_size}" REQ\'D - {pool_label}',
         "callout_xy": (365, 450),
         # The influent table's leftmost column is the Part #, so the OCR row
         # label starts with the part number, not the size. Match the unique
@@ -321,12 +321,18 @@ VALVE_KIT_PAGES = {
     },
     "effluent_precoat_valves.pdf": {
         "callout_template": (
-            '(1) {effluent_size}" EFFLUENT REQ\'D - {pool_label}\n'
-            '(1) {precoat_size}" PRECOAT REQ\'D - {pool_label}'
+            '({effluent_qty}) {effluent_size}" EFFLUENT REQ\'D - {pool_label}\n'
+            '({precoat_qty}) {precoat_size}" PRECOAT REQ\'D - {pool_label}'
         ),
-        # Centered on the requested spot (green-X mark): box center ≈ (471, 448)
-        # in PDF points, so the top-left anchor is (374, 416).
-        "callout_xy": (374, 416),
+        # Anchored in the clear full-width band between the drawings and the
+        # dimensions table. The template's baked example callout sits at
+        # ~(245, 528) but is stripped at annotation time, so the band from
+        # y=470 down to the table top at y=600 is free across x=32..580.
+        # The previous anchor (374, 416) left only 226pt of width, which forced
+        # the engine to shrink the font to ~7pt once extra-valve lines (longer
+        # than "(1) 12\" EFFLUENT REQ'D - COMPETITION POOL") joined the box.
+        # 8 lines at the default 14pt line height end at y=590, clear of the table.
+        "callout_xy": (40, 470),
         # This template is a flattened raster scan: the ONLY real text is the
         # yellow callout — every table value (sizes AND part #s) is pixels, so
         # neither OCR row detection nor text-layer search lands the dense 3"/6"
@@ -335,6 +341,12 @@ VALVE_KIT_PAGES = {
         # each is looked up in pinned_rows (str(size) -> [box, ...]). One
         # full-width Dimensions table here, so one box per size.
         "size_keys": ["effluent_size", "precoat_size"],
+        # Extra valves quoted on a Defender beyond the four service roles
+        # (e.g. a gear-operated isolation valve) are listed on THIS page:
+        # one callout line "({qty}) {size}\" {NAME}" per valve, plus a red box
+        # on its size row when the table carries one. Keeps every valve on the
+        # job visible to the reviewer instead of only in the run log.
+        "accepts_extra_valves": True,
         "pinned_rows": {
             "2":  [{"x": 36.9, "y": 648.2, "width": 538.7, "height": 9.6}],
             "3":  [{"x": 36.9, "y": 657.8, "width": 538.7, "height": 10.0}],
@@ -346,7 +358,7 @@ VALVE_KIT_PAGES = {
         },
     },
     "system_fill_drain_valve.pdf": {
-        "callout_template": '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}',
+        "callout_template": '({system_fill_qty}) {system_fill_size}" SYSTEM FILL REQ\'D - {pool_label}',
         # Was centered on the green-X (10, 422); shifted +100 to the right.
         "callout_xy": (110, 422),
         # Imperial filters use this fill-only page + the separate drain
@@ -361,7 +373,14 @@ VALVE_KIT_PAGES = {
         # 530.6). The full-height vertical at 587.5 is the PAGE FRAME, not a
         # table border — do not extend box widths to it (that overshoot was the
         # bug fixed here: dims width is 530.6-75.5=455.1, not 512.0).
-        "size_keys": ["precoat_size"],
+        #
+        # Was ["precoat_size"]: the kit string carries no system-fill token, so
+        # the precoat size stood in for it. That holds only while the precoat is
+        # 3" or 4" — the system fill is ALWAYS one of those two. Now driven by
+        # system_fill_size, which the orchestrator resolves and leaves None
+        # (page skipped for that section, warning logged) when no valid fill
+        # size can be determined.
+        "size_keys": ["system_fill_size"],
         "pinned_rows": {
             "2":     [{"x": 348.2, "y": 545.2, "width": 181.8, "height": 9.3},
                       {"x": 75.5,  "y": 640.2, "width": 455.1, "height": 9.6}],
@@ -381,23 +400,46 @@ VALVE_KIT_PAGES = {
     },
     "system_fill_drain_valve_assero.pdf": {
         # Combined System Fill & Drain Valve cut sheet — used for Assero (SP-29)
-        # filters, which carry both the fill and the drain on one page. precoat
-        # size is the system-fill AND drain valve size for these systems.
+        # filters, which carry both the fill and the drain on one page.
         "callout_template": (
-            '(1) {precoat_size}" SYSTEM FILL REQ\'D - {pool_label}\n'
-            '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}'
+            '({system_fill_qty}) {system_fill_size}" SYSTEM FILL REQ\'D - {pool_label}\n'
+            '({system_fill_qty}) {system_fill_size}" DRAIN VALVE REQ\'D - {pool_label}'
         ),
         "callout_xy": (362, 472),
-        # Red boxes pinned to the 3" rows (Part-Numbers + Dimensions tables) —
-        # the standard SP-29 fill/drain size. Revisit if a non-3" SP-29 appears.
-        "red_boxes_fixed": [
-            {"x": 346, "y": 562, "width": 113, "height": 14},
-            {"x": 74,  "y": 657, "width": 458, "height": 13},
-        ],
+        # WAS: red_boxes_fixed pinned to the 3" rows, with the note "the
+        # standard SP-29 fill/drain size. Revisit if a non-3" SP-29 appears."
+        # Quote 05043737 (SPLEX MD) was that non-3" SP-29 — a 4/4/4 kit — and
+        # the page shipped with the callout reading 4" while both boxes stayed
+        # baked on the 3" row. The upper box was also 113pt wide against a
+        # 182pt table, stopping mid-column.
+        #
+        # Now size-keyed like the Imperial sheet. Row geometry measured off
+        # this raster at 288 DPI (horizontal rules at 545.0/554.5/564.2/573.5/
+        # 583.0/592.5/602.2 upper and 640.0/649.5/658.5/667.8/678.2/687.5/697.2
+        # lower; verticals at 348.0-530.0 upper and 76.0-531.0 lower) and it
+        # matches system_fill_drain_valve.pdf row for row — the two cut sheets
+        # share a table block.
+        "size_keys": ["system_fill_size"],
+        "pinned_rows": {
+            "2":     [{"x": 348.2, "y": 545.2, "width": 181.8, "height": 9.3},
+                      {"x": 75.5,  "y": 640.2, "width": 455.1, "height": 9.6}],
+            "2 1/2": [{"x": 348.2, "y": 554.5, "width": 181.8, "height": 9.7},
+                      {"x": 75.5,  "y": 649.8, "width": 455.1, "height": 9.7}],
+            "3":     [{"x": 348.2, "y": 564.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 659.5, "width": 455.1, "height": 9.3}],
+            "4":     [{"x": 348.2, "y": 573.8, "width": 181.8, "height": 9.4},
+                      {"x": 75.5,  "y": 668.8, "width": 455.1, "height": 9.4}],
+            "5":     [{"x": 348.2, "y": 583.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 678.2, "width": 455.1, "height": 9.6}],
+            "6":     [{"x": 348.2, "y": 592.8, "width": 181.8, "height": 9.4},
+                      {"x": 75.5,  "y": 687.8, "width": 455.1, "height": 9.4}],
+            "8":     [{"x": 348.2, "y": 602.2, "width": 181.8, "height": 9.6},
+                      {"x": 75.5,  "y": 697.2, "width": 455.1, "height": 9.6}],
+        },
         "only_for_filter_family": "ASSERO",
     },
     "drain_valve_extension.pdf": {
-        "callout_template": '(1) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}',
+        "callout_template": '({precoat_qty}) {precoat_size}" DRAIN VALVE REQ\'D - {pool_label}',
         # Seated in the white space BELOW the dimensions table. The table
         # bottom border sits at ~626pt; the box top is placed at 636 (≈10pt
         # gap). At 4 pool lines (64pt tall) it ends at ~700pt, clear of the
@@ -406,9 +448,13 @@ VALVE_KIT_PAGES = {
         # Unlike effluent/system_fill this template HAS a real text layer, but
         # the table only ever lists drain sizes 3 and 4, so the rows are pinned
         # (deterministic; matches the prior job's baked row-3 box exactly).
-        # drain size = precoat_size for these systems. A requested size with no
-        # row here (e.g. 6") draws no box, which is correct — there is no 6" row.
+        # drain size = precoat_size for these systems. Unlike the sightglass
+        # size (read off a real quoted sightglass line), this one is INFERRED,
+        # so a size with no row here means the inference does not hold for this
+        # system — skip the section entirely rather than print an unboxed
+        # callout asserting e.g. a 10" drain valve on a 2000 GPM Defender.
         "size_keys": ["precoat_size"],
+        "skip_section_if_no_row": True,
         "pinned_rows": {
             "3": [{"x": 164.6, "y": 604.9, "width": 283.3, "height": 13.4}],
             "4": [{"x": 164.6, "y": 614.7, "width": 283.3, "height": 13.4}],
@@ -418,7 +464,7 @@ VALVE_KIT_PAGES = {
         "only_for_filter_family": "IMPERIAL",
     },
     "inline_sightglass.pdf": {
-        "callout_template": '(1) {sightglass_size}" REQ\'D - {pool_label}',
+        "callout_template": '({sightglass_qty}) {sightglass_size}" REQ\'D - {pool_label}',
         # Centered on the requested spot (green-X mark): box center ≈ (290, 495)
         # in PDF points, so the top-left anchor is (193, 477).
         "callout_xy": (193, 477),
