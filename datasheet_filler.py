@@ -209,6 +209,21 @@ def resolve_filter_template(
             log.info("resolve_filter_template: chose %s", path)
             return path
 
+    # Engineering's own file names also resolve, e.g.
+    #   "TEMPLATE - V113922366-SP-55-36-2076.pdf"
+    #   "TEMPLATE - V113860659-SP-55-36-2076 10X8 REDUCING BUSHINGS.pdf"
+    # (drawing number prefix, no " - " before the variant, BUSHINGS plural).
+    variant_re = None
+    if kit is not None:
+        variant_re = re.compile(rf"\b{kit[0]}\s*X\s*{kit[1]}\s+REDUCING\s+BUSHINGS?\b", re.I)
+    model_re = re.compile(rf"(?:^|[\s-]){re.escape(model)}(?![\d-])", re.I)
+    loose = [p for p in sorted(subdir.glob("*.pdf")) if model_re.search(p.stem)]
+    plain = [p for p in loose if "REDUCING" not in p.stem.upper()
+             and "MIRRORED" not in p.stem.upper() and "ROTATED" not in p.stem.upper()]
+    for path in ([p for p in loose if variant_re.search(p.stem)] if variant_re else []) + plain:
+        log.info("resolve_filter_template: chose %s (engineering file name)", path)
+        return path
+
     raise KeyError(
         f"No template file found for {effective_ref!r}. Tried: "
         f"{[str(subdir / c) for c in candidates]}"
@@ -540,6 +555,21 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
 
         # Blank any placeholder the plan didn't touch (revision-row INIT /
         # DYMNYR on the lettered 36" drawings, unfilled optional slots).
+        # A reducing-bushing drawing whose note names a different bushing than
+        # its file (SP-55-36-2076 10X8, V113860659, shipped reading "12X10
+        # REDUCING BUSHINGS INCLUDED") is corrected to match the file name.
+        fm = re.search(r"(\d+)\s*X\s*(\d+)\s+REDUCING\s+BUSHING",
+                       os.path.basename(template_path), re.I)
+        if fm:
+            want = f"{fm.group(1)}X{fm.group(2)}"
+            for page_idx, page in enumerate(doc):
+                for widget in page.widgets():
+                    val = widget.field_value or ""
+                    nm = re.match(r"^\s*(\d+)\s*X\s*(\d+)(\s+REDUCING\s+BUSHINGS?\s+INCLUDED.*)$", val, re.I)
+                    if nm and f"{nm.group(1)}X{nm.group(2)}" != want:
+                        page_to_writes.setdefault(page_idx, {})[widget.field_name] = want + nm.group(3)
+                        log.warning("fill_datasheet: corrected bushing note %r -> %s", val, want)
+
         for page_idx, page in enumerate(doc):
             for widget in page.widgets():
                 name = widget.field_name
