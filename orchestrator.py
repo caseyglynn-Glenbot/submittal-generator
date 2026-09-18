@@ -36,6 +36,12 @@ import parts_catalog
 from valve_roles import resolve_section_valve_sizes, resolve_system_fill_size
 from datasheet_filler import (
     fill_datasheet, resolve_filter_template, FILTER_FAMILIES, normalize_model,
+    family_for,
+)
+from mapping_table import (
+    SHIPPING_PAGE_STANDARD, SHIPPING_PAGE_VIRTUO, VIRTUO_FAMILY,
+    VIRTUO_SHIPPING_ROWS, VIRTUO_SHIPPING_TABLE_X,
+    VIRTUO_SHIPPING_CALLOUT_XY, VIRTUO_SHIPPING_CALLOUT_WIDTH,
 )
 from cover_page_filler import fill_cover_page
 
@@ -601,6 +607,50 @@ def generate_submittal(
         included_schematics.add(schematic_name)
         pages_to_merge.append(schematic_path)
         print(f"  {li.reference} ({family}) → {schematic_name}")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 3b — Shipping dimensions (after the schematics)
+    # ─────────────────────────────────────────────────────────────────────
+    # 36" Imperial (Virtuo) filters -> Virtuo sheet with the quoted model rows
+    # boxed and a qty/pool callout. Every other Defender -> standard sheet.
+    print(f"\n--- Shipping dimensions ---")
+    virtuo_filters = [li for li in sorted_filters
+                      if family_for(li.reference) == VIRTUO_FAMILY]
+    other_filters = [li for li in sorted_filters
+                     if family_for(li.reference) != VIRTUO_FAMILY]
+    if virtuo_filters:
+        tpl = TEMPLATE_DIR / SHIPPING_PAGE_VIRTUO
+        if tpl.exists():
+            boxes, lines, seen = [], [], set()
+            x0, x1 = VIRTUO_SHIPPING_TABLE_X
+            for li in virtuo_filters:
+                model = normalize_model(li.reference)
+                label = pool_labels.get(li.section, "")
+                lines.append(f"({li.quantity}) {model} REQ'D"
+                             + (f" - {label}" if label else ""))
+                band = VIRTUO_SHIPPING_ROWS.get(model)
+                if band and model not in seen:
+                    seen.add(model)
+                    boxes.append(RedBox(x=x0, y=band[0], width=x1 - x0,
+                                        height=band[1] - band[0]))
+                elif not band:
+                    print(f"  WARNING: {model} has no row on {tpl.name}")
+            cx, cy = VIRTUO_SHIPPING_CALLOUT_XY
+            out = OUTPUT_DIR / "shipping_virtuo.pdf"
+            annotate_page(tpl, [YellowCallout(x=cx, y=cy, lines=lines,
+                                              width=VIRTUO_SHIPPING_CALLOUT_WIDTH)],
+                          [], out, fixed_red_boxes=boxes)
+            pages_to_merge.append(out)
+            print(f"  {tpl.name} ← {len(lines)} callout line(s), {len(boxes)} red box(es)")
+        else:
+            print(f"  MISSING: {SHIPPING_PAGE_VIRTUO}")
+    if other_filters:
+        tpl = TEMPLATE_DIR / SHIPPING_PAGE_STANDARD
+        if tpl.exists():
+            pages_to_merge.append(tpl)
+            print(f"  {tpl.name} (standard, {', '.join(li.reference for li in other_filters)})")
+        else:
+            print(f"  MISSING: {SHIPPING_PAGE_STANDARD}")
 
     # ─────────────────────────────────────────────────────────────────────
     # Steps 4a/4b/4c — Build the produced-pages dict before emitting in order

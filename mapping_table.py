@@ -29,8 +29,16 @@ SECTION_TO_POOL_LABEL = {
 }
 
 
+# Section titles like "Wave Pool Filter System" name the pool, then the
+# equipment. Only the pool part belongs on a callout ("- WAVE POOL").
+_POOL_LABEL_SUFFIX_RE = re.compile(r"\s+(?:DEFENDER\s+)?FILTER\s+SYSTEMS?\s*$", re.I)
+
+
 def get_pool_label(section: str) -> str:
-    return SECTION_TO_POOL_LABEL.get(section, section.upper())
+    if section in SECTION_TO_POOL_LABEL:
+        return SECTION_TO_POOL_LABEL[section]
+    label = _POOL_LABEL_SUFFIX_RE.sub("", section or "").strip()
+    return (label or section or "").upper()
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +704,33 @@ SCHEMATIC_BY_FAMILY = {
 # (if part-driven) or STATIC_PAGES (if always included), then insert the
 # filename into this list at the desired position. No orchestrator change
 # is ever needed for new pages.
+# ---------------------------------------------------------------------------
+# Shipping dimensions page (one per submittal, placed after the schematics)
+# ---------------------------------------------------------------------------
+# Any 36" Imperial (Virtuo) filter on the quote -> the Virtuo sheet, with a red
+# box on each quoted model's row. Otherwise the standard SP-24..SP-55 / SP-29
+# sheet as-is. A quote mixing both lines gets both pages.
+SHIPPING_PAGE_STANDARD = "shipping_dimensions_standard.pdf"
+SHIPPING_PAGE_VIRTUO = "shipping_dimensions_virtuo.pdf"
+VIRTUO_FAMILY = "IMPERIAL_36"
+
+# Row bands on the Virtuo table (image-only page), measured off a 288 DPI
+# raster line-scan: table x 25.6-208.4, row rules at 386.6/397.6/408.9/
+# 420.0/431.1/442.3/453.4.
+VIRTUO_SHIPPING_ROWS = {
+    "SP-33-36-732":  (386.6, 397.6),
+    "SP-39-36-948":  (397.6, 408.9),
+    "SP-43-36-1182": (408.9, 420.0),
+    "SP-47-36-1440": (420.0, 431.1),
+    "SP-50-36-1698": (431.1, 442.3),
+    "SP-55-36-2076": (442.3, 453.4),
+}
+VIRTUO_SHIPPING_TABLE_X = (24.6, 209.4)
+# Clear band between the "Models ..." caption and the footer.
+VIRTUO_SHIPPING_CALLOUT_XY = (150, 645)
+VIRTUO_SHIPPING_CALLOUT_WIDTH = 312
+
+
 PAGE_ORDER = [
     # ----- Page 5 — Filter Model Information (pending template) -----
     "filter_model_information.pdf",

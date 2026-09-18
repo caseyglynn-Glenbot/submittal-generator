@@ -64,12 +64,33 @@ FILTER_FAMILIES: dict[str, set[str]] = {
         "SP-29-36-450",
         "SP-29-36-500",
     },
+    # 36" element Imperial line (Sep 2026). Engineering drawing numbers:
+    #   SP-33-36-732  V113922361 / 6X4  V113859917
+    #   SP-39-36-948  V113922362 / 8X6  V113860381
+    #   SP-43-36-1182 V113922363 / 8X6  V113860413
+    #   SP-47-36-1440 V113922364 / 8X6  V113860436
+    #   SP-50-36-1698 V113922365 / 10X8 V113860454
+    #   SP-55-36-2076 V113922366 / 10X8 V113860659
+    # These drawings use their own field names (see _FIELD_ROLE_PATTERNS) and
+    # are drawn at 2x size (2448x1584); fill_datasheet scales them down.
+    "IMPERIAL_36": {
+        "SP-33-36-732",
+        "SP-39-36-948",
+        "SP-43-36-1182",
+        "SP-47-36-1440",
+        "SP-50-36-1698",
+        "SP-55-36-2076",
+    },
 }
 
 FAMILY_SUBDIR = {
     "IMPERIAL": "IMPERIAL",
     "ASSERO": "ASSERO/IMPERIAL",
+    "IMPERIAL_36": "IMPERIAL 36",
 }
+
+# Datasheet page size used by the original Imperial/Assero drawings (11x17).
+DATASHEET_PAGE_SIZE = (1224, 792)
 
 FILTER_TEMPLATE_BASE = Path(os.environ.get(
     "FILTER_TEMPLATE_BASE",
@@ -114,6 +135,23 @@ def _valve_kit_for_section(line_items, section: str) -> Optional[tuple[int, int]
         m = _VALVE_KIT_RE.search(desc)
         if m:
             return int(m.group(1)), int(m.group(2))
+    # No valve kit line: the section may quote its valves individually. Use
+    # the same role assignment the valve pages use (check valve = influent,
+    # next largest = effluent) so the drawing's reducing-bushing variant
+    # matches what the valve pages box. Quote 04062392 (12" check + 10" PA)
+    # fell through to the base drawing before this.
+    try:
+        from valve_roles import resolve_section_valve_sizes
+        section_items = [li for li in line_items
+                         if getattr(li, "section", None) == section]
+        sizes, _ = resolve_section_valve_sizes(section_items)
+    except Exception as e:  # never let variant selection block the datasheet
+        log.warning("loose-valve variant lookup failed for %r: %s", section, e)
+        return None
+    if sizes and sizes.get("influent") and sizes.get("effluent"):
+        inf, eff = sizes["influent"], sizes["effluent"]
+        if float(inf).is_integer() and float(eff).is_integer() and inf != eff:
+            return int(inf), int(eff)
     return None
 
 
@@ -291,8 +329,55 @@ def _discover_widgets(page) -> dict[str, DiscoveredWidget]:
     return out
 
 
-def _resolve_slot(spec: SlotSpec, discovered: dict[str, DiscoveredWidget]):
+# The 36" line drawings name their fields two different ways, neither of
+# which matches the Text* names above:
+#   named:   "55-Project Name", "55_1-DWN BY", "43-Project NUMBER"
+#   lettered: "F", "43-F", "50-M"  (A..X in title-block order)
+# Match on the part after the model prefix. Tier 0 in _resolve_slot.
+_FIELD_PREFIX_RE = re.compile(r"^\d+(?:_\d+)?-")
+_NAMED_FIELD_ROLES = {
+    "PROJECT NAME": "project_name",
+    "POOL NAME": "pool_name",
+    "CLIENT NAME": "customer",
+    "DWN BY": "drawn_by",
+    "DWN DT": "drawn_date",
+    "CHK BY": "checked_by",
+    "CHK DT": "checked_date",
+    "PROJECT NUMBER": "job_number",
+    "SHEET #": "sheet_num",
+    "TOTAL SHEETS": "sheet_total",
+    "REV #": "revision",
+}
+_LETTER_FIELD_ROLES = {
+    "F": "project_name", "G": "pool_name", "H": "customer",
+    "I": "job_number", "J": "sheet_num", "K": "sheet_total", "L": "revision",
+    "M": "drawn_by", "N": "drawn_date", "O": "checked_by", "P": "checked_date",
+}
+
+
+def _field_role(field_name: str) -> Optional[str]:
+    base = _FIELD_PREFIX_RE.sub("", field_name or "").strip().upper()
+    return _NAMED_FIELD_ROLES.get(base) or _LETTER_FIELD_ROLES.get(base)
+
+
+# Placeholder text that must never reach a submittal. Any widget still holding
+# one of these after the fill is blanked before baking (the lettered 36"
+# drawings carry "INIT"/"DYMNYR" in their revision rows too).
+_PLACEHOLDER_VALUES = {
+    "INIT", "INT", "DYMNYR", "MM/DD/YY", "JOB#", "####", "#####",
+    "[PROJECT NAME]", "[POOL NAME]", "[CLIENT NAME]",
+    "PROJECT NAME", "POOL NAME", "CLIENT NAME",
+}
+
+
+def _resolve_slot(spec: SlotSpec, discovered: dict[str, DiscoveredWidget],
+                  slot: Optional[str] = None):
     """Return (DiscoveredWidget, strategy) or (None, 'not_found')."""
+    # Tier 0: role derived from the field name (36" line drawings)
+    if slot:
+        for w in discovered.values():
+            if _field_role(w.name) == slot:
+                return w, "role"
     # Tier 1: exact field name
     for nm in spec.names:
         if nm in discovered:
@@ -408,6 +493,12 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
 
         for slot, spec in TITLE_BLOCK_SLOTS.items():
             val = values.get(slot)
+            # The named 36" drawings leave SHEET __ OF __ blank where the
+            # older drawings print "1 OF 1". Every datasheet is a single sheet.
+            if (val is None or val == "") and slot in ("sheet_num", "sheet_total"):
+                w0, _ = _resolve_slot(spec, discovered_flat, slot)
+                if w0 is not None and not (w0.value or "").strip():
+                    val = "1"
             if val is None or val == "":
                 # Three sub-cases when no value is supplied:
                 #   1. Slot is required → log a 'missing' entry, skip.
@@ -427,7 +518,7 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
                 # write step below converts "" to a single space.
                 val = ""
 
-            chosen, strategy = _resolve_slot(spec, discovered_flat)
+            chosen, strategy = _resolve_slot(spec, discovered_flat, slot)
             if chosen is None:
                 report.missing[slot] = "field_not_found_on_template"
                 log.error("fill_datasheet: %s NOT FOUND on %s "
@@ -447,6 +538,16 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
         for page_idx, field_name, val, _slot, _strat in plan:
             page_to_writes.setdefault(page_idx, {})[field_name] = val
 
+        # Blank any placeholder the plan didn't touch (revision-row INIT /
+        # DYMNYR on the lettered 36" drawings, unfilled optional slots).
+        for page_idx, page in enumerate(doc):
+            for widget in page.widgets():
+                name = widget.field_name
+                if not name or name in page_to_writes.get(page_idx, {}):
+                    continue
+                if (widget.field_value or "").strip().upper() in _PLACEHOLDER_VALUES:
+                    page_to_writes.setdefault(page_idx, {})[name] = ""
+
         for page_idx, writes in page_to_writes.items():
             page = doc[page_idx]
             for widget in page.widgets():
@@ -465,8 +566,26 @@ def fill_datasheet(template_path, output_path=None, /, **kwargs):
         # strips out.
         doc.bake(annots=False, widgets=True)
 
+        # The 36" line is drawn at 2x (2448x1584). Scale any oversized sheet
+        # down to the 11x17 size the rest of the datasheets use so the merged
+        # submittal stays uniform.
+        oversized = any(pg.rect.width > DATASHEET_PAGE_SIZE[0] * 1.1 for pg in doc)
+        if oversized:
+            scaled = fitz.open()
+            for pg in doc:
+                if pg.rect.width > DATASHEET_PAGE_SIZE[0] * 1.1:
+                    w, h = DATASHEET_PAGE_SIZE
+                    if pg.rect.height > pg.rect.width:
+                        w, h = h, w
+                    new = scaled.new_page(width=w, height=h)
+                    new.show_pdf_page(new.rect, doc, pg.number)
+                else:
+                    scaled.insert_pdf(doc, from_page=pg.number, to_page=pg.number)
+            doc.close()
+            doc = scaled
+
         # Serialize
-        pdf_bytes = doc.tobytes()
+        pdf_bytes = doc.tobytes(garbage=3, deflate=True) if oversized else doc.tobytes()
 
         if output_path:
             with open(output_path, "wb") as f:

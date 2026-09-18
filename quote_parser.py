@@ -248,6 +248,15 @@ _FURNITURE_RE = re.compile(
 )
 
 
+# Lines that can sit between a section's Currency line and the next section's
+# title: the section subtotal and the "*Section totals include sub-sections"
+# footnote. Page-break furniture is handled by _is_furniture.
+_SECTION_NOTE_RE = re.compile(
+    r"^(\*?\s*Section totals\b.*|Net Price\b.*|Item Pricing Summary\b.*|Project Name\b.*|Proposal For\b.*)$", re.I)
+# End of the priced sections; nothing after this is a section title.
+_QUOTE_TOTALS_RE = re.compile(r"^(Quote Totals|Proposal Notes)\b", re.I)
+
+
 def _is_furniture(text: str) -> bool:
     return bool(_FURNITURE_RE.match((text or "").strip()))
 
@@ -353,6 +362,7 @@ def parse_quote(pdf_path: str) -> Quote:
         all_lines.extend(t.split("\n"))
 
     prev_nonempty = ""
+    awaiting_header = False
     i = 0
     while i < len(all_lines):
         line = all_lines[i].strip()
@@ -365,17 +375,30 @@ def parse_quote(pdf_path: str) -> Quote:
         # subtotal/total/furniture rows (the multi-pool "Comp Pool" bug labeled
         # the section with its subtotal line) and strip any trailing price an
         # OCR merge may have appended to the title.
+        #
+        # Newer Evoqua layouts put a "Net Price: $ x" subtotal and a
+        # "*Section totals include sub-sections" note BETWEEN the Currency line
+        # and the next section's title (quote 04062392, "Wave Pool Filter
+        # System"). Looking only at the line right after Currency missed the
+        # title and filed the whole filter system under the previous "Items"
+        # section. So once a Currency / Item Pricing Summary line is seen, keep
+        # waiting through that subtotal furniture until the first real line.
         if ("Currency" in prev_nonempty) or ("Item Pricing Summary" in prev_nonempty):
-            if (
-                not line.startswith("Currency")
-                and "Unit Price" not in line
-                and not item_re.match(line)
+            awaiting_header = True
+        if awaiting_header:
+            if _SECTION_NOTE_RE.match(line) or line.startswith("Currency"):
+                pass  # subtotal furniture between sections; keep waiting
+            elif item_re.match(line) or _QUOTE_TOTALS_RE.match(line):
+                awaiting_header = False
+            elif (
+                "Unit Price" not in line
                 and not _is_furniture(line)
                 and not _is_price_fragment(line)
             ):
                 current_section = (
                     re.sub(r"\s*\$?[\d,]+\.\d{2}\s*$", "", line).strip() or line
                 )
+                awaiting_header = False
 
         # Line-item detection
         m = item_re.match(line)
